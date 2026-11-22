@@ -14,7 +14,7 @@ import (
 // EnsureRequestTrace 在创建服务端 Span 之前初始化统一 ID，Request ID 与 Trace ID 使用同一个值。
 // 沿用合法 X-Request-ID 或 traceparent，全部缺失时使用加密随机数生成 32 位小写十六进制 ID。
 // 空值、重复值、非法格式或 ID 冲突返回 HTTP 400；随机源失败返回 500，不进入业务处理。
-// go-zero 服务通过 app.NewServer 或 app.WithRequestTraceRouter 在路由外层接入。
+// go-zero 服务通过 app.NewServerWithCORS 在路由外层统一接入。
 func EnsureRequestTrace(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, err := headInfo.ExtractRequestTrace(r.Context(), r.Header)

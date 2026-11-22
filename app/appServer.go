@@ -55,4 +55,7 @@ type ConfigAppServer struct {
 	// Language 配置项目本地词典，Dir 未填写时默认 etc/language。
 	// 由服务启动代码显式调用 language.Load，并在加载失败时停止启动；仅配置此字段不会自动读取文件。
 	Language language.Config `json:",optional"`
+	// CORS 为当前 API Server 的跨域配置，默认任意来源且关闭凭证，开放预检请求头。
+	// 通过 NewServerWithCORS 接入，凭证模式必须配置精确来源。
+	CORS appMiddleware.CORSConfig `json:",optional"`
 }

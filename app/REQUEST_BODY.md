@@ -18,7 +18,7 @@
 
 ## 中间件顺序
 
-标准接入使用 `app.NewServer` 和 `NewServerMiddleware(...).ApiUseMiddleware()`：
+标准接入使用 `app.NewServerWithCORS` 和 `NewServerMiddleware(...).ApiUseMiddleware()`：
 
 ```text
 入口 Trace 校验/初始化 → 单值业务头校验并注入语言 → 原生声明长度预检查 → go-zero 原生中间件
@@ -47,7 +47,7 @@
 
 go-zero v1.7.4 的原生 `MaxBytesHandler` 只比较 `Content-Length`，不能覆盖未知长度读取。平台请求体中间件始终检查实际字节数。
 
-`app.NewServer` 根据 `RestConf.Middlewares.MaxBytes` 和 `RestConf.MaxBytes`，在 Trace 初始化之后预检查标准服务器声明长度，避免原生默认检查提前返回空 413。`WithRequestTraceRouter` 自定义接入时，第三个参数填写对应原生上限；原生检查关闭时传 0，省略则按 1 MiB 预检查。
+`app.NewServerWithCORS` 根据 `RestConf.Middlewares.MaxBytes` 和 `RestConf.MaxBytes`，在 Trace 初始化之后预检查标准服务器声明长度，避免原生默认检查提前返回空 413。构造函数内部传入对应原生上限；原生检查关闭时不进行此项声明长度预检查，实际读取上限仍由 RequestBody 配置控制。
 
 两套配置及网关的更小上限仍可能先拒绝。**调大 RequestBody.MaxBytes 时，需要同步调整原生/网关限制。** 推荐按下面示例关闭原生 MaxBytes，统一交由平台配置控制。自定义原生路由限制（如 `rest.WithMaxBytes`）或网关提前拒绝时，其响应形式由相应层负责；要求统一外观时使用平台全局配置。
 
@@ -90,7 +90,7 @@ func NewHTTPServer(c Config, check appMiddleware.CheckRequestTokenFunc) (*rest.S
     if err != nil {
         return nil, err
     }
-    server, err := app.NewServer(c.RestConf)
+    server, err := app.NewServerWithCORS(c.RestConf, c.CORS)
     if err != nil {
         return nil, err
     }

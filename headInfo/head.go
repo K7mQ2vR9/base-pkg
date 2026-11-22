@@ -108,14 +108,14 @@ func ContextHeadInLog(ctx context.Context, h *Head) context.Context {
 	return contextWithLogFields(ctx, selected...)
 }
 
-// GetFullHead 返回原始请求头，结果可能包含认证凭证。
+// GetFullHead 返回原始请求头的独立副本，map 和各值切片均不与请求共享。
+// 保留字段名、值及多值顺序；空请求头返回可写空 map，r 必须非 nil。
+// 结果仍可能包含认证凭证，本函数不做脱敏，由调用方控制使用范围。
 func GetFullHead(r *http.Request) map[string][]string {
-	headers := make(map[string][]string)
-
-	for k, v := range r.Header {
-		headers[k] = v
+	headers := r.Header.Clone()
+	if headers == nil {
+		return make(map[string][]string)
 	}
-
 	return headers
 }
 

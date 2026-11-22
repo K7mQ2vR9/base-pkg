@@ -57,7 +57,7 @@ func ConfigureAPI(server *rest.Server,
 }
 ```
 
-server 使用 `app.NewServer` 创建，保留 Trace 和单值业务头校验。服务状态中间件仍需显式接入，`ApiUseMiddleware` 不会自动配置业务状态回调。`CheckServiceStatusRequest` 与构造函数继续接收原白名单参数，但不会据此跳过状态检查，缺少回调或返回 false 均拒绝。
+server 使用 `app.NewServerWithCORS` 创建，保留 Trace 和单值业务头校验。服务状态中间件仍需显式接入，`ApiUseMiddleware` 不会自动配置业务状态回调。`CheckServiceStatusRequest` 与构造函数继续接收原白名单参数，但不会据此跳过状态检查，缺少回调或返回 false 均拒绝。
 
 `ApiHeaderMiddleware` 对 GET、白名单及其他请求统一调用 `Head.Verify`。原 `CloseVerifyOption`、`NotVerify` 字段及 `SetNoVerify` 调用入口保留，但不再绕过校验。当前 `Head.Verify` 没有额外业务必填规则，本次没有擅自要求 business/source 等字段必填；实际单值格式检查仍由前置 `RequestHeaderMiddleware` 执行。
 

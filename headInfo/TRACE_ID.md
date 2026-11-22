@@ -54,19 +54,19 @@ HTTP 校验失败时可为错误响应建立新的诊断 ID，非法输入不会
 
 ## API 接入位置
 
-创建 API Server 时使用公共包入口：
+创建 API Server 时使用公共包入口，`corsConfig` 为项目加载的 CORS 配置；零值允许任意来源且关闭跨域凭证：
 
 ```go
-server, err := app.NewServer(restConf)
+server, err := app.NewServerWithCORS(restConf, corsConfig)
 if err != nil {
     return err
 }
 // 然后按原流程装配 ServerMiddleware、认证及业务路由。
 ```
 
-`app.NewServer` 在路由最外层接入统一 ID，先于 go-zero 原生 Trace、日志和业务中间件。Trace 初始化后先执行 [HTTP 单值业务头校验](HTTP_HEADERS.md)，非法头在正文读取、解密和认证之前返回带同一 ID 的统一400。应用中间件及 ApiHeaderMiddleware 只读取已初始化的上下文，不再承担链路初始化。
+`app.NewServerWithCORS` 在路由最外层接入统一 ID，先于 go-zero 原生 Trace、日志和业务中间件。Trace 初始化后先执行 [HTTP 单值业务头校验](HTTP_HEADERS.md)，非法头在正文读取、解密和认证之前返回带同一 ID 的统一400。应用中间件及 ApiHeaderMiddleware 只读取已初始化的上下文，不再承担链路初始化。
 
-使用自定义路由时，通过 `app.WithRequestTraceRouter(customRouter, restConf.Telemetry.Sampler, nativeMaxBytes)` 包装，作为 `rest.NewServer` 的选项；原生 `Middlewares.MaxBytes` 启用时 `nativeMaxBytes` 取 `restConf.MaxBytes`，未启用时传 0。第三个参数省略默认 1 MiB，用于在原生长度检查前输出带 Trace 的统一 413；实际读取限制仍需装配 [请求体中间件](../app/REQUEST_BODY.md)。自定义 NotFound、NotAllowed 或 CORS 选项在其后设置。仅有 ID 的新链路按服务配置的采样比例决定是否采样，有标准上游上下文时保留其采样决定，采样结果不改变统一 ID。
+链路路由由 `app.NewServerWithCORS` 内部装配，无需手动追加路由包装选项。原生 `Middlewares.MaxBytes` 启用时，内部使用 `restConf.MaxBytes` 预检查声明长度，超限返回带 Trace 的统一 413；关闭时不执行此项预检查，实际读取限制仍需装配 [请求体中间件](../app/REQUEST_BODY.md)。自定义 NotFound、NotAllowed 可通过构造函数选项设置；CORS 使用构造函数的配置参数，避免用其他 CORS 组件或裸 Router 覆盖入口。仅有 ID 的新链路按服务配置的采样比例决定是否采样，有标准上游上下文时保留其采样决定，采样结果不改变统一 ID。
 
 普通 HTTP 响应通过 `X-Request-ID` 返回该值，响应正文继续使用 `trace` 字段。公共 CORS 中间件允许浏览器读取 `X-Request-ID`。业务统一调用 `headInfo.GetTrace(ctx)` 获取此 ID，不从未校验的原始请求头再次取值。
 

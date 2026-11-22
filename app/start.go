@@ -112,7 +112,7 @@ type ServerMiddleware struct {
 	aesConfig aesGCM.Config
 }
 
-// NewServerMiddleware 装配应用中间件；Server 用 NewServer 创建，以便在原生 Span 前初始化统一 ID。
+// NewServerMiddleware 装配应用中间件；Server 用 NewServerWithCORS 创建，以便在原生 Span 前初始化统一 ID。
 func NewServerMiddleware(s *rest.Server, opt ...SMOption) *ServerMiddleware {
 	res := &ServerMiddleware{
 		Server: s,
@@ -126,7 +126,8 @@ func NewServerMiddleware(s *rest.Server, opt ...SMOption) *ServerMiddleware {
 }
 
 // ApiUseMiddleware 依次装配 CORS、可选并发控制、正文限制、解密、请求头和认证。
-// 正文上限未配置时使用 1 MiB；Trace、单值业务头校验及原生长度预检查由 NewServer 负责。
+// 正文上限未配置时使用 1 MiB；Trace、单值业务头校验及原生长度预检查由 NewServerWithCORS 负责。
+// 标准入口的 CORS 策略覆盖正常及早期错误；此处默认 CORS 组件沿用已绑定的实例配置。
 func (s *ServerMiddleware) ApiUseMiddleware() {
 	authMiddleware := s.authMiddleware()
 	s.Server.Use(appMiddleware.NewCorsMiddleware().Handle)

@@ -62,7 +62,9 @@
 | 35 | API panic 恢复与响应重复写入处理 | 已按用户要求撤回，不继续开发 |
 | 36 | JWT 普通解析与刷新有效期校验统一 | 已完成、验证并确认 |
 | 37 | GenerateToken 结构体参数与明确时长类型 | 已完成、验证并确认 |
-| 38 | 请求头装配保留已有出站自定义 metadata | 已开发并验证，待确认 |
+| 38 | 请求头装配保留已有出站自定义 metadata | 已完成、验证并确认 |
+| 39 | GetFullHead 返回独立请求头副本 | 已修改并确认，按用户要求不做测试 |
+| 40 | CORS 凭证模式与实例来源配置 | 已完成并确认，配置统一通过 NewServerWithCORS 接入 |
 
 ## 开发记录
 
@@ -1349,3 +1351,78 @@ git diff --check
 
 - **限制** HTTP为内存请求，真实grpc通过进程内bufconn，未做TCP/TLS/网关或部署认证联调；自定义metadata仍受gRPC既有键值/大小限制，合并不证明字段真实可信，不应承载仅进程内使用的敏感值。原有外部设施集成测试只编译未运行，本机Go1.26.5，未另装Go1.22；其他业务模块未修改或测试。API/RPC目录仅更新接入记录。
 - **测试清理** 已在清理前登记实际命令、结果与限制；随后删除两个overlay测试源及配置、原始/工作区摘要快照、首轮/最终测试与构建/编译输出、三份抽取范例源码及编译产物、两份运行输出、全部本轮临时脚本产物和独立构建缓存。核对任务目录及两个仓库虚拟测试目标均不存在，原有五个测试及摘要不变；未新增持久文件。范围外原有源码、JWT参数、已有依赖及工作区配置保持；API/RPC目录仅更新记录，其他业务项目文件和测试未改动。
+
+
+### 2026-11-22 / DEV-20261122-008 / GetFullHead深复制请求头
+
+- **用户确认与范围** 用户确认第39项并明确“此项不做测试”。第38项经用户继续下一项确认。仅调整headInfo/head.go中的GetFullHead，不改签名、请求头字段/值、认证/Trace/metadata装配逻辑。
+- **改动** 使用标准库http.Header.Clone深复制map与值切片，保留字段名、值及多值顺序；原Header为nil时仍返回可写的非nil空map，维持原调用行为。补充中文注释说明副本隔离、非nil请求条件及凭证不自动脱敏，未扩大日志或自动转发范围。
+- **检查与限制** 按用户要求未新增或运行测试、测试编译、构建或运行时验证；只阅读本机标准库Header.Clone实现，并执行gofmt -w common-pkg/headInfo/head.go、git -C common-pkg diff --check及git diff --check进行格式/差异核对。未声称运行验证双向修改行为。API/RPC目录仅更新接入记录，其他业务子项目不改动。
+- **测试清理** 本轮未创建测试文件、测试脚本、缓存目录或临时产物，无新增测试内容需要清理；原有测试和用户文件保留。
+
+
+### 2026-11-22 / DEV-20261122-009 / CORS凭证模式与实例配置
+
+- **用户确认与范围** 第40项按确认实施：默认任意来源、关闭跨域凭证；需要凭证时显式开启并配置精确来源，返回匹配Origin及Vary:Origin；保留开放所有预检请求头，正常和早期错误采用同一策略。第39项确认完成且仍按该项要求不增加专项测试，本轮保留GetFullHead改动，第35项继续撤回。
+- **配置** 新增appMiddleware.CORSConfig（AllowCredentials/AllowedOrigins）及ConfigAppServer.CORS备注，NewCorsMiddlewareWithConfig校验并复制配置。凭证开启必须有名单，禁止*、null、空/空白/控制字符、路径/查询/片段/用户信息、通配子域及非法端口；使用HTTP/HTTPS精确序列化来源（大小写/显式端口精确匹配）。非凭证模式也可配置来源名单，否则默认*。名单外/缺少/重复/大小写别名Origin不授予跨域头，普通请求仍按原业务认证处理，不新增403或改变白名单。
+- **服务装配** NewServer保持原调用方式并使用默认策略；新增NewServerWithCORS(restConf,config,options...)显式应用实例配置。自定义router新增WithRequestTraceCORSRouter(...)(rest.RunOption,error)，原WithRequestTraceRouter保持默认入口。外层Bind绑定实例只读策略并写头，覆盖Trace/单值头错误、路由404/405和原生组件错误；标准入口在Trace/单值头/声明长度检查后处理有效OPTIONS并返回204（含未注册路径），不进入正文/认证/业务。ApiUseMiddleware原默认CORS继续沿用已绑定策略，无进程全局设置，实例互不影响。
+- **错误出口与头** 原Trace/头/正文错误调用的setCORSHeaders从ctx取统一策略，不回退成开放来源，清理旧授权头后按策略重建。凭证匹配时输出具体Origin与true，默认不再输出Allow-Credentials。Vary保留已有项并大小写不敏感去重，Vary:*不追加；预检继续回显全部Access-Control-Request-Headers（包括Authorization和项目自定义头），方法列表及请求ID/项目令牌暴露头保持。CORS不代替服务认证/CSRF或Cookie自身规则，不叠加其他CORS/裸router覆盖配置。
+- **说明与范例** 新增 [CORS配置与接入](app/CORS.md)，含YAML、API/独立net-http例子、默认和凭证模式、迁移/上下文边界，引用Fetch官方规范的凭证规则。更新HTTP_HEADERS.md及装配注释。仅填写配置字段不会自动接入，业务须传给NewServerWithCORS；独立HTTP使用Bind在Trace外层写入策略，Handle在校验后处理预检。旧凭证客户端需显式配置来源，默认Token客户端不必开启credentials。
+- **验证** 首轮4组、完整7组TestCORS及-race全部通过，另1组原生超时验证通过，合计8组无竞态/失败。配置校验覆盖18类非法来源和4类有效来源、空凭证名单拒绝及输入切片副本；默认/凭证/非凭证名单3模式×GET/OPTIONS×4来源共24场景，验证授权字段清理、请求头全放行、暴露头、Origin精确/重复/别名不任选、Vary去重和原值保持。16goroutine各32次共512次请求跨两策略实例隔离，父ctx值/截止时间保持。
+- **实际API验证** 使用真实app.NewServerWithCORS及go-zero内存路由，2模式×3来源×12路径共72场景：正常、Trace错误、重复业务头、声明/实际正文413、未登录401、404、405、预检/未知路径预检、非法/超长预检，CORS策略一致且Trace/业务码不变。另验证AES失败、嵌套占用并发名额时503及来源拒绝时不错误开放。YAML独立配置、初始化错误早于服务创建、自定义router及默认/凭证两个Server互不影响均通过。原生Timeout开启的独立场景验证503仍保留Origin/true及Vary，不改原超时正文。
+- **完整检查与范例** 两份Go范例抽取编译，独立预检main实际输出204/https://app.example.com/true/Authorization-Jwt, X-Custom。全量构建、原有测试全量编译、gofmt、diff及说明链接通过。对照本轮开始SHA-256快照，五个原有测试、第39项GetFullHead、JWT/Trace实现、认证/白名单/语言/日志、已撤回第35项及其他范围外源码保持。
+- **实际命令** 平台根目录执行，GOCACHE=/private/tmp/new-platform-cors-config.PcAw2jTg/cache、GOPROXY=off，无新增依赖或下载。两个overlay测试源/配置、源码摘要快照、各轮测试/构建/编译输出、两份抽取范例源码及编译产物、范例运行输出和独立缓存都在本轮任务目录，仓库无新增持久测试文件。
+
+```text
+go test -race -mod=readonly -buildvcs=false -overlay=/private/tmp/new-platform-cors-config.PcAw2jTg/overlay.json -run '^TestCORS' -count=1 -v ./common-pkg/appMiddleware -timeout=60s
+go test -race -mod=readonly -buildvcs=false -overlay=/private/tmp/new-platform-cors-config.PcAw2jTg/overlay.json -run '^TestCORS' -count=1 -v ./common-pkg/appMiddleware ./common-pkg/app -timeout=60s
+go test -race -mod=readonly -buildvcs=false -overlay=/private/tmp/new-platform-cors-config.PcAw2jTg/overlay.json -run '^TestCORSNativeTimeoutPolicy$' -count=1 -v ./common-pkg/app -timeout=60s
+go build -mod=readonly -buildvcs=false ./common-pkg/...
+go test -mod=readonly -buildvcs=false ./common-pkg/... -run '^$' -count=1
+go build -mod=readonly -buildvcs=false -o /private/tmp/new-platform-cors-config.PcAw2jTg/example_1.a /private/tmp/new-platform-cors-config.PcAw2jTg/example_1.go
+go build -mod=readonly -buildvcs=false -o /private/tmp/new-platform-cors-config.PcAw2jTg/example_2 /private/tmp/new-platform-cors-config.PcAw2jTg/example_2.go
+/private/tmp/new-platform-cors-config.PcAw2jTg/example_2
+gofmt -l common-pkg/appMiddleware/corsConfig.go common-pkg/appMiddleware/corsMiddleware.go common-pkg/app/traceServer.go common-pkg/app/appServer.go common-pkg/app/start.go
+git -C common-pkg diff --check
+git diff --check
+```
+
+- **限制** 请求通过内存HTTP/真实go-zero路由验证，不监听网络，未做真实浏览器credentials/Cookie、TLS/网关/代理缓存或生产域名联调；浏览器标准依据Fetch规范，不能将响应头测试声称为浏览器联调。完整API为确定路径关闭可选访问日志/统计/熔断/丢弃/原生MaxConns/超时等，另独立验证开启原生超时场景。原有外部设施集成测试只编译未运行，本机Go1.26.5，未另装Go1.22。默认模式行为调整：不再输出凭证头；来源匹配是精确字符串，部署须使用浏览器实际Origin。API/RPC目录仅更新接入记录，其他业务项目未改动。
+- **测试清理** 已在清理前登记实际命令、结果及限制；随后删除两个overlay测试源及配置、源码摘要快照、各轮测试/构建/编译输出、两份抽取范例源码及编译产物/运行输出、全部本轮临时脚本产物和独立构建缓存。核对任务目录及两个仓库虚拟测试目标均不存在，原有五个测试及摘要不变；第39项GetFullHead及其他范围外源码保持。新增持久文件仅为corsConfig.go与CORS使用说明；API/RPC目录仅更新记录，无新增测试或临时产物。
+
+
+### 2026-11-22 / DEV-20261122-010 / CORS公开入口简化
+
+- **确认与范围** 按用户“保留建议的，删除额外的”指示，保留推荐的 `NewServerWithCORS`，删除公开的 `WithRequestTraceCORSRouter`，不保留别名；原装配函数改为包内私有复用。已有 `NewServer`、默认策略的 `WithRequestTraceRouter` 及独立 HTTP 中间件保持。调用被删除入口的代码需改用 `NewServerWithCORS(restConf, config.CORS)`。
+- **实现与说明** 同步配置字段中文注释、CORS接入说明和HTTP头说明；CORS来源校验、凭证、预检和统一请求ID处理不变。仅修改公共包两份Go文件和相关文档，API/RPC目录仅更新开发记录。
+- **验证** 平台根目录使用本机Go、`GOCACHE=/private/tmp/new-platform-cors-entry.uYV9L56q/cache`、`GOPROXY=off`，以下命令均通过；两段Go范例从当前CORS.md抽取，第二段运行输出为204、https://app.example.com、true、Authorization-Jwt, X-Custom。当前源码和使用文档已无被删除的公开符号，历史开发记录保留原始事实。
+
+```text
+go build -mod=readonly -buildvcs=false ./common-pkg/...
+go test -mod=readonly -buildvcs=false ./common-pkg/... -run '^$' -count=1
+go build -mod=readonly -buildvcs=false -o /private/tmp/new-platform-cors-entry.uYV9L56q/example_1.a /private/tmp/new-platform-cors-entry.uYV9L56q/example_1.go
+go build -mod=readonly -buildvcs=false -o /private/tmp/new-platform-cors-entry.uYV9L56q/example_2 /private/tmp/new-platform-cors-entry.uYV9L56q/example_2.go
+/private/tmp/new-platform-cors-entry.uYV9L56q/example_2
+gofmt -l common-pkg/app/traceServer.go common-pkg/app/appServer.go
+git -C common-pkg diff --check
+git diff --check
+```
+
+- **限制** 本轮仅收敛公开接口，未新增测试用例；原有测试仅编译未运行，未重新执行上一轮完整行为/竞态测试或浏览器联调。范例通过内存HTTP请求验证响应头，无新增依赖、业务项目改动或网络监听。
+- **清理完成** 已在清理前登记实际命令、结果及限制，随后删除本轮抽取范例源码、编译产物、源码摘要和独立缓存，任务目录已不存在。核对原有五个测试及摘要保持，无新增测试；公共包仅本条记录、两份Go文件及两份使用说明发生本轮改动，第39项GetFullHead等范围外文件保持。
+
+
+### 2026-11-22 / DEV-20261122-011 / 删除重复Server构造入口
+
+- **用户确认与范围** 按用户要求保留推荐的NewServerWithCORS，删除NewServer，不增加兼容包装或别名。CORS配置、路由装配和中间件行为保持；原有WithRequestTraceRouter不属于本次两个构造函数的精简范围。
+- **修改** 将入口校验、默认策略和正文限制的中文注释集中到NewServerWithCORS；同步中间件注释及CORS、请求体、Trace、HTTP头、认证和多语言使用说明。仓库源码中没有需要迁移的app.NewServer业务调用，现有文档范例改为传入CORS配置。对外原调用需改为NewServerWithCORS(restConf, corsConfig)，零值配置允许任意来源且关闭凭证。
+- **验证与限制** 用户明确“修改不验证测试”，本轮未执行构建、编译、测试、范例运行、格式或差异检查；仅为实施修改读取和定位相关源码、注释及文档，不将前轮结果作为本轮验证结论。
+- **测试与产物** 本轮未新增测试用例、测试脚本、缓存或临时产物，无需清理；原有测试和用户文件保留。API/RPC目录仅更新开发记录。
+
+
+### 2026-11-22 / DEV-20261122-012 / 删除公开链路路由包装入口
+
+- **用户确认与范围** 按用户确认删除公开的WithRequestTraceRouter，不保留兼容入口或别名；保留包内私有的withRequestTraceCORSRouter，由NewServerWithCORS统一调用，业务不直接装配链路路由。此前记录中保留该公开入口的约定由本条替代。
+- **实现与说明** 删除默认CORS路由选项包装函数，将采样率、声明长度上限的单位及默认值注释移至私有装配函数；原有CORS、请求ID、单值头和正文预检查处理保持。同步Trace、HTTP头、正文限制与CORS使用说明及EnsureRequestTrace注释；当前源码没有需迁移的业务调用。已有外部调用应迁移到NewServerWithCORS(restConf,corsConfig)。
+- **验证与限制** 用户明确本轮不用测试验证，未运行构建、编译、测试、范例、格式或差异检查；仅读取和定位修改所需源码及文档，不将前轮检查结果作为本轮验证结论。
+- **测试与产物** 未新增测试用例、测试脚本、独立缓存或临时产物，无需清理；原有测试和用户文件保留。API/RPC目录仅更新开发记录。

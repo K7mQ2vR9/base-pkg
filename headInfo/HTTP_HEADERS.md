@@ -1,6 +1,6 @@
 # HTTP 单值业务请求头
 
-标准 API 使用 `app.NewServer` 或 `app.WithRequestTraceRouter` 时，入口在 Trace 初始化后自动执行单值业务头校验，再进入原生中间件、正文读取、解密和认证。GET、白名单及其他方法使用同一套规则；白名单仅允许正常匿名结果，不跳过已提供 Token 的认证或请求头结构校验，详见 [认证与匿名白名单](../appMiddleware/AUTH.md)。
+标准 API 使用 `app.NewServerWithCORS` 时，入口在 Trace 初始化后自动执行单值业务头校验，再进入原生中间件、正文读取、解密和认证。GET、白名单及其他方法使用同一套规则；白名单仅允许正常匿名结果，不跳过已提供 Token 的认证或请求头结构校验，详见 [认证与匿名白名单](../appMiddleware/AUTH.md)。
 
 ## 自定义字段统一使用中划线
 
@@ -79,7 +79,7 @@ Accept、Cookie、自定义多值头及其他不在集合中的字段也不被�
 
 ## 标准与独立接入
 
-平台标准入口自动启用，无新增配置项或白名单开关。`ApiUseMiddleware` 继续装配正文限制、AES 和认证，不需要再手动追加一次头校验。自定义路由通过 `WithRequestTraceRouter` 包装，避免用裸 Router 覆盖标准入口。
+平台标准入口自动启用单值头校验，无新增单值校验配置或白名单开关。`ApiUseMiddleware` 继续装配正文限制、AES 和认证，不需要再手动追加一次头校验。默认 CORS 允许任意来源且不启用凭证；需要配置来源或凭证时，统一通过 `NewServerWithCORS` 接入，入口错误沿用同一策略，见 [CORS接入](../app/CORS.md)。链路路由由构造函数内部装配，避免用裸 Router 覆盖标准入口。
 
 独立 net/http 接入时，显式保持下面的顺序：
 

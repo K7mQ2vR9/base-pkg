@@ -95,7 +95,7 @@ RPC 通常返回数据模型和业务 key，由 API 在最终输出阶段翻译�
 
 ## 认证前解密错误示例
 
-先将示例词典复制到项目 etc/language，并从项目根目录运行。下面仅用内存 HTTP 请求演示独立组件的错误翻译，不启动监听；实际 API 使用 app.NewServer 和 ApiUseMiddleware 自动接入。
+先将示例词典复制到项目 etc/language，并从项目根目录运行。下面仅用内存 HTTP 请求演示独立组件的错误翻译，不启动监听；实际 API 使用 app.NewServerWithCORS 和 ApiUseMiddleware 自动接入。
 
 ```go
 package main
