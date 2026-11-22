@@ -1,0 +1,15 @@
+{
+  "Authentication failed.": "Authentication failed.",
+  "User not login.": "User not logged in.",
+  "No permission": "No permission",
+  "Token invalid.": "Token invalid.",
+  "Internal Server Error": "Internal Server Error",
+  "Request failed.": "Request failed.",
+  "Service Unavailable": "Service Unavailable",
+  "Status service unavailable": "Status service unavailable",
+  "Request decryption failed.": "Request decryption failed.",
+  "Request forbid.": "Request forbid.",
+  "Bad Request": "Bad Request",
+  "Request Entity Too Large": "Request Entity Too Large",
+  "status.enabled": "Enabled"
+}
