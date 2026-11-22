@@ -21,7 +21,7 @@
 标准接入使用 `app.NewServer` 和 `NewServerMiddleware(...).ApiUseMiddleware()`：
 
 ```text
-入口 Trace 校验/初始化 → 单值业务头校验 → 原生声明长度预检查 → go-zero 原生中间件
+入口 Trace 校验/初始化 → 单值业务头校验并注入语言 → 原生声明长度预检查 → go-zero 原生中间件
 → CORS → 并发控制（若启用） → 请求体限量读取 → AES 解密 → 请求头装配 → 认证 → 业务
 ```
 
@@ -38,6 +38,8 @@
 | 正文读取成功，但 AES 密文/封装不符合既有协议 | 沿用原有 HTTP 200 业务错误协议 | 400 |
 
 请求体错误使用现有 `{code, message, data, trace}` 结构，`trace` 与 `X-Request-ID` 一致，保留 CORS 响应头。公开消息经过统一多语言入口，未配置翻译时使用标准状态文案，不输出原始正文、密文或底层读取错误。前置 Trace 校验失败仍使用原有链路错误协议。
+
+正文错误只从上下文读取语言，不再回退原始 HTTP 语言头。独立 net/http 必须先接入 RequestHeaderMiddleware（或在完成请求头校验后显式注入语言），再进入正文/并发/解密组件；单独使用正文组件而未注入语言时返回原文。完整接入见 [HTTP 入口说明](../headInfo/HTTP_HEADERS.md)。
 
 没有读到完整正文时不进入认证或业务。空正文、nil Body 和 `http.NoBody` 可继续处理；具体业务是否允许空正文，由接口解析规则决定。
 

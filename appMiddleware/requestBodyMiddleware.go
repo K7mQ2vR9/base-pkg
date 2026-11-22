@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/K7mQ2vR9/base-pkg/consts"
 	"github.com/K7mQ2vR9/base-pkg/headInfo"
 	"github.com/K7mQ2vR9/base-pkg/language"
 	"github.com/K7mQ2vR9/base-pkg/result"
@@ -52,17 +51,14 @@ func (m *RequestBodyMiddleware) Handle(next http.HandlerFunc) http.HandlerFunc {
 
 // WriteRequestBodyError 输出统一请求体错误：MaxBytesError 使用 HTTP 413，其余读取错误使用 HTTP 400。
 // 仅使用公开状态文案，不输出原始请求体或底层错误；调用方须先初始化请求 Trace。
+// 语言由前置 RequestHeaderMiddleware 注入上下文，不再独立读取或选择原始语言头。
 func WriteRequestBodyError(w http.ResponseWriter, r *http.Request, err error) {
 	status := http.StatusBadRequest
 	var tooLarge *http.MaxBytesError
 	if errors.As(err, &tooLarge) {
 		status = http.StatusRequestEntityTooLarge
 	}
-	locale := headInfo.GetContentLanguage(r.Context())
-	if locale == "" {
-		locale = r.Header.Get(consts.ContentLanguage)
-	}
-	message := language.TranslateMessage(http.StatusText(status), locale)
+	message := language.TranslateMessage(http.StatusText(status), headInfo.GetContentLanguage(r.Context()))
 	setCORSHeaders(w.Header(), r)
 	httpx.WriteJsonCtx(r.Context(), w, status, result.Error(status, message, headInfo.GetTrace(r.Context())))
 }

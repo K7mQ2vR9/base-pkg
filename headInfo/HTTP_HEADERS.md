@@ -41,12 +41,16 @@ RPC 原终端信息使用 `client-user-agent`，因为 `user-agent` 是 gRPC 自
 
 成功后，下游使用独立的请求头副本，已知单值字段转成标准 MIME 大小写，解密、认证和请求头装配通过 `Header.Get` 读取同一份值。字段值不去空白、不改内容；后续组件原有的修剪/验证规则仍然生效。原请求的头 map、值切片和上下文不修改，校验器不读取或关闭正文。
 
+校验成功后，RequestHeaderMiddleware 通过 `headInfo.ContextWithRequestLanguage(r)` 将唯一的 Content-Language 提前写入新 ctx 的出站 metadata。正文、并发、解密及统一响应均通过 `GetContentLanguage(ctx)` 读取，不再各自选择原始语言头。仅裁剪原 Head 读取规则中的首尾空格；不读正文、不注入身份、不改变 AES 配置或其他 metadata。
+
+缺少/空语言写入空值，覆盖父上下文的旧语言；重复、大小写别名及空值列表均拒绝且不任选语言，错误响应使用原文。其他头非法但语言头唯一时，该400响应仍可翻译。未知语言、缺少词条或未加载词典按原规则返回原文。语言注入发生在 Trace 成功之后，Trace 错误协议保持原样。
+
 本项目实际读取的令牌头是 `authorization-jwt`，本轮不新增其他令牌别名。UID、角色和客户端 IP 仍从认证及可信代理逻辑获得，不将客户端随意提供的同名头直接作为身份或地址。
 
 ## 错误响应与执行顺序
 
 ```text
-Trace 校验/初始化 → 单值业务头校验 → 原生声明长度预检查
+Trace 校验/初始化 → 单值业务头校验并提前注入语言 → 原生声明长度预检查
 → go-zero 原生中间件 → CORS → 可选并发控制 → 请求体限制
 → AES 解密 → 请求头上下文装配 → 认证 → 业务/RPC
 ```
@@ -56,6 +60,8 @@ Trace 校验/初始化 → 单值业务头校验 → 原生声明长度预检查
 Trace 自身的非法/重复/冲突规则先执行，仍遵循 [统一请求 ID 规则](TRACE_ID.md)。HTTP 单值头失败不进入框架解压、正文读取、解密、认证或业务。有效 CORS 预检仍正常返回204，`Access-Control-Request-Headers` 中的逗号头名列表不受本规则限制；预检若实际附带重复的单值业务头，则同样拒绝。
 
 `headInfo.NormalizeHTTPHeaders(headers)` 可单独使用：成功返回深复制且规范化的头，失败返回可用 `errors.Is(err, headInfo.ErrInvalidHTTPHeaders)` 判断的错误。错误只描述固定字段名与规则。该函数不初始化 Trace，也不执行身份认证。
+
+`ContextWithRequestLanguage` 只提取语言并返回新 ctx，不能替代 `NormalizeHTTPHeaders`；标准入口已自动调用，业务无需重复注入。自定义入口使用它时，须保留完整单值头校验。HTTP 成功头校验会以本次请求的语言覆盖旧语言，不从入站 RPC metadata 猜测语言。
 
 ## X-Forwarded-For 和其他多值头
 

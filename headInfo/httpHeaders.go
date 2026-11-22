@@ -1,12 +1,14 @@
 package headInfo
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/K7mQ2vR9/base-pkg/consts"
+	"google.golang.org/grpc/metadata"
 )
 
 // ErrInvalidHTTPHeaders 表示已知单值 HTTP 请求头存在重复或无值列表。
@@ -45,4 +47,29 @@ func NormalizeHTTPHeaders(headers http.Header) (http.Header, error) {
 		normalized.Set(name, value)
 	}
 	return normalized, nil
+}
+
+// ContextWithRequestLanguage 将 HTTP 请求唯一的 Content-Language 提前写入出站 metadata 副本。
+// 应在 NormalizeHTTPHeaders 成功后调用，供正文、并发及解密等前置错误通过 GetContentLanguage 读取。
+// 错误响应也可调用：缺失、重复、大小写别名或无值列表写入空语言，不任选一个值或沿用旧语言。
+// 仅裁剪原 Head 读取规则中的首尾空格，不猜测语言、不修改请求、其他 metadata、Trace 或取消/截止时间。
+// 本函数只选择语言，不能替代完整的请求头校验；r 必须非 nil。
+func ContextWithRequestLanguage(r *http.Request) context.Context {
+	locale := ""
+	present := false
+	for key, values := range r.Header {
+		if !strings.EqualFold(key, consts.ContentLanguage) {
+			continue
+		}
+		if present || len(values) != 1 {
+			locale = ""
+			break
+		}
+		present = true
+		locale = strings.Trim(values[0], " ")
+	}
+	md, _ := metadata.FromOutgoingContext(r.Context())
+	md = md.Copy()
+	md.Set(consts.ContentLanguage, locale)
+	return metadata.NewOutgoingContext(r.Context(), md)
 }

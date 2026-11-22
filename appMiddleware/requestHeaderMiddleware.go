@@ -2,9 +2,7 @@ package appMiddleware
 
 import (
 	"net/http"
-	"strings"
 
-	"github.com/K7mQ2vR9/base-pkg/consts"
 	"github.com/K7mQ2vR9/base-pkg/headInfo"
 	"github.com/K7mQ2vR9/base-pkg/language"
 	"github.com/K7mQ2vR9/base-pkg/result"
@@ -22,31 +20,20 @@ func NewRequestHeaderMiddleware() *RequestHeaderMiddleware {
 }
 
 // Handle 拒绝非法单值头并输出带当前 Trace 的 HTTP400/code400；成功时下游使用规范化头副本。
+// 校验成功后提前注入唯一语言，供正文、并发和 AES 错误使用；错误分支也不采用重复语言值。
 // GET、白名单及其他方法使用相同规则，不改变原请求、正文或上游上下文。
 func (m *RequestHeaderMiddleware) Handle(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		headers, err := headInfo.NormalizeHTTPHeaders(r.Header)
 		if err != nil {
-			locale := headInfo.GetContentLanguage(r.Context())
-			if locale == "" {
-				// 错误响应也只使用唯一语言值，语言头自身重复时不任选一个值。
-				var values []string
-				for key, entries := range r.Header {
-					if strings.EqualFold(key, consts.ContentLanguage) {
-						values = append(values, entries...)
-					}
-				}
-				if len(values) == 1 {
-					locale = values[0]
-				}
-			}
-			message := language.TranslateMessage(http.StatusText(http.StatusBadRequest), locale)
+			ctx := headInfo.ContextWithRequestLanguage(r)
+			message := language.TranslateMessage(http.StatusText(http.StatusBadRequest), headInfo.GetContentLanguage(ctx))
 			setCORSHeaders(w.Header(), r)
-			httpx.WriteJsonCtx(r.Context(), w, http.StatusBadRequest,
-				result.Error(http.StatusBadRequest, message, headInfo.GetTrace(r.Context())))
+			httpx.WriteJsonCtx(ctx, w, http.StatusBadRequest,
+				result.Error(http.StatusBadRequest, message, headInfo.GetTrace(ctx)))
 			return
 		}
-		request := r.WithContext(r.Context())
+		request := r.WithContext(headInfo.ContextWithRequestLanguage(r))
 		request.Header = headers
 		next(w, request)
 	}

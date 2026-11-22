@@ -57,7 +57,8 @@
 | 30 | 多语言恢复项目本地 etc/language 词典 | 已完成、验证并确认 |
 | 31 | 白名单仅豁免用户必须登录、统一校验与错误返回 | 已完成、验证并确认 |
 | 32 | 内置错误文案与项目本地词典对齐 | 已完成、验证并确认 |
-| 33 | 认证结果、业务标识与上下文日志字段同步 | 已开发并验证，待确认 |
+| 33 | 认证结果、业务标识与上下文日志字段同步 | 已完成、验证并确认 |
+| 34 | 认证前错误响应的语言提前注入与统一读取 | 已开发并验证，待确认 |
 
 ## 开发记录
 
@@ -1214,3 +1215,35 @@ git diff --check
 
 - **限制** HTTP使用内存请求，真实gRPC走进程内bufconn，无TCP/TLS/部署日志平台联调；原有外部设施集成测试只编译未运行。本机Go1.26.5，未另装Go1.22；日志适配按当前go-zero v1.7.4公开ContextWithFields行为验证，框架升级需复核覆盖行为。Logger/旧ctx不自动刷新，不解析日志正文，手工改metadata仍需显式同步。LogKeys仅初始化时配置，请求期间不得并发修改。API/RPC子项目暂无业务源码，仅更新接入约定。
 - **测试清理** 已在清理前登记实际命令、结果与限制；随后删除两个overlay测试源及配置、源码摘要快照、首轮/最终测试和构建/编译输出、抽取范例源码及二进制/运行输出、全部本轮临时脚本产物与独立缓存。核对任务目录与两个仓库虚拟测试目标均不存在，原有五个测试及摘要不变；上一轮错误文案/词典变更及其他范围外原有文件摘要一致。新增持久文件仅为LOG_CONTEXT使用说明，API/RPC子项目仅更新记录，无新增测试或临时产物。
+
+
+### 2026-11-22 / DEV-20261122-003 / 认证前错误响应语言统一
+
+- **用户确认与范围** 用户确认第34项：入口单值头校验通过后提前注入语言，请求头、正文、并发、AES错误统一从上下文读取；重复语言头拒绝且不任选，未知语言/词条回退原文。中间件顺序、AES配置开关、错误码和Trace规则保持。第33项经用户继续下一项确认，本轮保留其日志同步实现。
+- **实现** headInfo/httpHeaders.go新增ContextWithRequestLanguage，将HTTP唯一Content-Language写入出站metadata副本，仅裁剪与原Head一致的首尾空格，其他字段/入站metadata/Trace/取消/截止时间保持。缺失、空值、重复、大小写别名和空值列表选用空语言，清除继承的旧语言，不任选首个值或猜测语言。该函数只选择语言，不代替完整NormalizeHTTPHeaders。
+- **入口与统一读取** RequestHeaderMiddleware成功校验后对下游新ctx提前注入语言，发生于原生声明长度检查/并发/正文/AES之前；错误分支也通过同一函数选择唯一语言。其他头非法但语言唯一时400可翻译，语言头自身重复/别名/无值列表时400使用原文。正文错误移除原始头回退，限流错误改读GetContentLanguage(ctx)，AES和统一响应原有ctx读取即可取得语言，无需修改解密器或响应实现。原请求/请求头/正文不被语言函数修改，不注入身份或加密器。
+- **说明与接入影响** 更新[HTTP入口](headInfo/HTTP_HEADERS.md)、[正文限制](app/REQUEST_BODY.md)、[多语言说明及认证前解密错误范例](language/README.md)。标准NewServer自动接入；独立net/http需显式接入RequestHeaderMiddleware，或在完成单值头校验后注入语言。仅调用NormalizeHTTPHeaders不会写ctx，单独正文/并发/AES组件若无上下文语言则返回原文，不再从未验证原始头自行选择；后续头变化也不覆盖已注入ctx。RPC语言Getter/协议保持，Trace自身和原生组件自行生成的错误不在本轮改写范围。
+- **验证结果** 首轮4组头部/上下文测试通过，完整API加入后8组及-race通过，另外定向增加1组缺少词条回退验证通过，共9组，无失败或竞态报告。15种语言头结构覆盖缺失/空/空白、大小写/下划线、未知/逗号原文、重复同值/不同值、空值列表、大小写别名含空别名、旧下划线名称不读取，父上下文旧语言被覆盖但本身不变；其他metadata/自定义多值/入站值/Trace/取消/截止时间保持、不读或关闭正文。头校验拒绝路径覆盖有效单语言翻译与重复语言不沿用旧值；512个并发请求分支语言不串用。
+- **实际API验证** 使用app.NewServer/ApiUseMiddleware及真实go-zero路由（内存请求，不监听网络）：5种语言×6种AES请求共30场景，涵盖非法密文、错误密钥、空密文、缺少aes_data、非法封装及正常加解密；确认解密失败在认证前按语言翻译，HTTP200/code400保持。成功响应验证翻译、实际语言、9007199254740993精度及AES密文解码。正文/普通响应4语言×4路径共16场景，覆盖原生声明长度413、未知长度实际超限413、读取失败400与正常明文返回，错误不进入认证/业务且无内部诊断。另验证3种实际路由重复头拒绝与1组空词典缺词条原文回退。
+- **并发上限与错误源** 在同一实际服务的业务handler内保持名额占用并嵌套请求，4种语言均得到503对应译文/原文，拒绝时未读取正文或执行认证；CORS预检204、重复语言先400、释放后正常请求可用。单独组件验证已注入zh-CN后即使原始头改成en，正文/限流仍读ctx；没有注入时不再回退未校验头。此组通过嵌套请求确定占用时机，不声称是多连接并发压测。
+- **范例与完整核对** 两份language说明Go范例抽取编译并实际运行：原示例中文/精确数字保持，新示例认证前AES失败输出中文、HTTP200/code400且Trace一致。全量构建、原有测试全量编译、gofmt、diff及说明链接核对通过。SHA-256对照本轮开始快照，五个原有测试、上一轮日志字段实现、AES/响应/认证/Trace/中间件装配顺序/错误码和词典JSON摘要不变。
+- **实际命令** 平台根目录执行，GOCACHE=/private/tmp/new-platform-early-language.G6C4mqYa/cache、GOPROXY=off，无下载或新增依赖。两个overlay测试源、配置、源码快照、首轮/完整/缺词条测试输出、构建/编译输出、两份抽取范例源码/二进制/运行输出、词典临时副本与独立缓存都在本轮任务目录；缺词条测试夹具由t.TempDir自动清理。
+
+```text
+go test -race -mod=readonly -buildvcs=false -overlay=/private/tmp/new-platform-early-language.G6C4mqYa/overlay.json -run '^TestEarlyLanguage' -count=1 -v ./common-pkg/headInfo -timeout=60s
+go test -race -mod=readonly -buildvcs=false -overlay=/private/tmp/new-platform-early-language.G6C4mqYa/overlay.json -run '^TestEarlyLanguage' -count=1 -v ./common-pkg/headInfo ./common-pkg/app -timeout=60s
+go test -race -mod=readonly -buildvcs=false -overlay=/private/tmp/new-platform-early-language.G6C4mqYa/overlay.json -run '^TestEarlyLanguageMissingDictionaryKey$' -count=1 -v ./common-pkg/app -timeout=60s
+go build -mod=readonly -buildvcs=false ./common-pkg/... ./language-pkg/...
+go test -mod=readonly -buildvcs=false ./common-pkg/... ./language-pkg/... -run '^$' -count=1
+go build -mod=readonly -buildvcs=false -o /private/tmp/new-platform-early-language.G6C4mqYa/example_1 /private/tmp/new-platform-early-language.G6C4mqYa/example_1.go
+go build -mod=readonly -buildvcs=false -o /private/tmp/new-platform-early-language.G6C4mqYa/example_2 /private/tmp/new-platform-early-language.G6C4mqYa/example_2.go
+# 两个范例均在任务目录运行，该目录已复制示例etc/language
+./example_1
+./example_2
+gofmt -l common-pkg/headInfo/httpHeaders.go common-pkg/appMiddleware/requestHeaderMiddleware.go common-pkg/appMiddleware/requestBodyMiddleware.go common-pkg/appMiddleware/concurrencyLimiterMiddleware.go
+git -C common-pkg diff --check
+git diff --check
+```
+
+- **限制** 实际API使用内存HTTP，无TCP/TLS/网关或生产词典挂载联调；原有外部设施集成测试只编译未运行，未另装Go1.22，本机Go1.26.5。为确定各拒绝路径，临时API配置关闭可选日志/统计/熔断/负载丢弃/超时/原生MaxConns，Trace/原生MaxBytes等保持启用；未验证原生组件自行生成错误的译文。RPC未改，仅验证metadata保留，不另启RPC服务。API/RPC子项目暂无业务源码，本轮只更新接入约定。
+- **测试清理** 已在清理前登记实际命令、结果及限制；随后删除两个overlay测试源及配置、源码摘要快照、首轮/完整/缺词条测试输出、构建/编译输出、两份抽取范例源码及二进制/运行输出、词典临时副本、全部本轮脚本产物和独立构建缓存。核对任务目录与两个仓库虚拟测试目标均不存在，原有五个测试及摘要不变；无新增持久文件，范围外原有源码、上轮日志同步、AES/认证/响应/Trace/顺序/错误码及词典JSON摘要一致。API/RPC子项目仅更新记录，无新增测试或临时产物。
