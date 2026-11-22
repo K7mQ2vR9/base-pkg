@@ -20,6 +20,8 @@
 
 `CheckRequestTokenFuncWithUserInfo` 支持用户扩展 JSON。匿名放行时显式写入 metadata 的 `token-uid="0"` 并清空 `headInfo.GetUserInfo(ctx)`，不会继承父上下文已有的用户 ID/扩展信息。正数 UID 只使用回调给出的身份及 JSON；原请求上下文不修改。非法 JSON 即使配合 uid=0 也拒绝，合法 JSON 在匿名时丢弃。
 
+认证后通过新 ctx 记录的业务日志同步用户 ID，匿名记为 `"0"`，用户扩展 JSON 不进入日志。业务调用 SetBusinessCode 时同步当前分支的日志标识；接入与上下文边界见 [日志同步说明](../headInfo/LOG_CONTEXT.md)。
+
 三种现有回调接口保留。仅返回整数的 `CheckRequestTokenFunc`：0 表示正常匿名、-1 无权限、其他负数无效；原来把过期/无效 Token 返回 0 的业务实现需要改为负数，或改用可返回 error 的接口。不要让真实认证失败表现为正常匿名。
 
 错误响应沿用既有协议 HTTP200 与业务 code：未登录401、Token无效402、无权限405；特殊错误按原安全映射处理，不回显底层诊断。请求头400、正文413等入口错误仍保留各自 HTTP 状态。此处没有重定义业务码或全局错误映射。

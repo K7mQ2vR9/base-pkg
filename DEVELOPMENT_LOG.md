@@ -55,7 +55,9 @@
 | 28 | 业务 metadata 单值、UID 与 IP 校验 | 已完成、验证并确认 |
 | 29 | HTTP 单值头校验与自定义传输字段中划线命名 | 已完成、验证并确认 |
 | 30 | 多语言恢复项目本地 etc/language 词典 | 已完成、验证并确认 |
-| 31 | 白名单仅豁免用户必须登录、统一校验与错误返回 | 已开发并验证，待确认 |
+| 31 | 白名单仅豁免用户必须登录、统一校验与错误返回 | 已完成、验证并确认 |
+| 32 | 内置错误文案与项目本地词典对齐 | 已完成、验证并确认 |
+| 33 | 认证结果、业务标识与上下文日志字段同步 | 已开发并验证，待确认 |
 
 ## 开发记录
 
@@ -1164,3 +1166,51 @@ git diff --check
 
 - **限制与接入影响** HTTP使用实际路由加内存请求，RPC为真实grpc但通过进程内bufconn，无TCP/TLS/部署网关联调；认证回调由临时业务桩提供，不验证生产Token服务/凭证配置。原有外部设施集成测试只编译未执行，本机Go1.26.5，未另装Go1.22。Head.Verify没有业务规则，不能声称已验证新增业务必填限制；预检继续沿用CORS流程。白名单map共享方式保持，调用方不得并发写入。非白名单RPC现在要求正数UID，纯服务任务需规划匿名方法；RPC服务调用方认证和用户身份核实由业务回调落实。API/RPC子项目暂无业务源码，本轮只更新接入记录。
 - **测试清理** 已在清理前登记实际命令、结果与限制；随后删除两个overlay测试源及配置、源码快照、首轮/最终测试日志、构建/全量编译输出、两份抽取范例源码与编译产物、全部本轮临时脚本产物和独立缓存。核对任务目录与两个仓库虚拟测试目标均不存在，原有五个测试及摘要不变。白名单匹配函数逐字一致，上一轮本地多语言及范围外公共包原有文件摘要保持不变；新增持久文件仅为AUTH使用说明。API/RPC子项目仅更新开发记录，无新增测试或临时产物。
+
+
+### 2026-11-22 / DEV-20261122-001 / 内置错误文案与项目本地词典对齐
+
+- **用户确认与范围** 用户确认第32项：清理内置文案多余尾部空格，核对本地示例词典，保留精确匹配、错误码、认证及白名单接口。第31项经用户继续下一项确认；本轮不实施第33项日志身份同步。
+- **改动** result/xcode/common_err.go的UserNotFound、TokenInvalid，以及appMiddleware/apiRequestDecrypt.go的RequestDecryptError、RequestBadError公开文案去除尾部空格，分别与User not login.、Token invalid.、Request decryption failed.、Request forbid.词典key一致，补齐中文注释。其余常用固定公开文案与示例词典核对一致，原有内部诊断及业务动态文案不改；语言加载、翻译器、两份词典JSON、错误分类和认证逻辑均保持不变。
+- **说明与影响** [本地词典说明](language/README.md)增加四条内置原文/中文对照。项目若使用这些内置错误带空格的旧key，应同步去除key末尾空格；不增加兼容别名或对所有文案自动TrimSpace，业务自定义message及data保持精确匹配。
+- **验证结果** 5组TestErrorLocale全部通过：12条常用内置文案的中文/英文与en-US回退；8类错误×4种语言×原始/包装共64个统一HTTP响应场景，验证原业务码、HTTP200、Trace、空data、内部诊断不外泄；5类错误经ToGRPCStatus/FromGRPCError转换再输出中文响应；6类带空格/未命中业务文案原样保留，data字段精确匹配、id保护及9007199254740993精度保留；实际Trace/请求头/认证中间件覆盖受保护未登录、白名单无效/过期Token、权限不足及正常匿名5个场景，错误不进入业务，白名单/回调次数规则保持。
+- **完整核对** 全量构建及原有测试全量编译通过，gofmt、diff与说明链接检查通过。按本轮开始SHA-256快照，除两份错误定义及语言说明外其他原有公共包文件不变；五个原有测试、词典JSON、语言实现、白名单/认证/RPC及日志源码摘要不变。没有新增依赖或发布操作。
+- **实际命令** 平台根目录执行，GOCACHE=/private/tmp/new-platform-error-language.L6cxJ3Bz/cache、GOPROXY=off，无下载。单个overlay测试源、overlay配置、源码摘要快照、测试/构建/编译输出与独立缓存均在本轮任务目录，仓库未新增持久测试文件。
+
+```text
+go test -mod=readonly -buildvcs=false -overlay=/private/tmp/new-platform-error-language.L6cxJ3Bz/overlay.json -run '^TestErrorLocale' -count=1 -v ./common-pkg/result -timeout=60s
+go build -mod=readonly -buildvcs=false ./common-pkg/... ./language-pkg/...
+go test -mod=readonly -buildvcs=false ./common-pkg/... ./language-pkg/... -run '^$' -count=1
+gofmt -l common-pkg/result/xcode/common_err.go common-pkg/appMiddleware/apiRequestDecrypt.go
+git -C common-pkg diff --check
+git diff --check
+```
+
+- **限制** HTTP认证使用内存请求和真实中间件，RPC仅验证错误状态的本地转换，未启动实际RPC或做部署网关联调；解密两类错误通过统一响应入口验证，未测试完整AES请求链路或改变早期中间件的语言注入时机。原有外部设施集成测试只编译未运行；使用本机Go1.26.5，未另装Go1.22。本次只改公开文案，无并发逻辑改动，未重复进行竞态检测。API/RPC子项目暂无业务源码，仅更新接入记录。
+- **测试清理** 已在清理前登记实际命令、结果及限制；随后删除本轮overlay测试源及配置、源码摘要快照、测试/构建/编译输出、临时脚本产物和独立构建缓存。核对任务目录及仓库虚拟测试目标均不存在，原有五个测试及摘要不变；未新增任何持久测试或其他文件。范围外原有源码、词典JSON、翻译/认证/白名单/RPC/日志实现摘要一致，API/RPC子项目仅更新开发记录，无新增测试或临时产物。
+
+
+### 2026-11-22 / DEV-20261122-002 / 认证结果与上下文日志同步
+
+- **用户确认与范围** 第32项经用户继续下一项确认，本轮第33项按已确认方案实施：认证后的业务日志同步用户ID，匿名为0；SetBusinessCode同步当前分支业务标识，按字段覆盖，保留Trace/其他日志字段，Token和用户JSON不自动入日志，公共函数签名和认证规则不变。
+- **实现** headInfo.SetTokenUid在复制出站metadata后覆盖LogKeys中的用户ID日志；现有HTTP认证已调用该Setter，无需修改认证代码。SetBusinessCode继续分别复制入站/出站metadata，并同步日志字段。HTTP初始化后的字段继续为字符串，RPC初始化后继续为字符串列表；未初始化日志模式的Setter默认字符串，空值显式覆盖旧值，不改变Setter不验证身份/格式的约定。
+- **字段覆盖** ContextHeadInLog与ContextMetadataInLog共用内部覆盖逻辑；同名上下文字段最后写入值生效、保留其他自定义字段，不修改父上下文。核对当前go-zero实现，ContextWithFields只追加且未公开字段key；通过公开ContextWithFields构造仅含日志字段的标记上下文，在构造新快照时合并字段并交回logx保存，不使用反射/unsafe或私有key。其余Value、取消、截止时间委托原上下文。RPC字段列表复制，避免调用方后续修改原metadata影响日志；Token即使出现在LogKeys中也不由metadata入口输出。
+- **说明** 新增 [日志上下文使用说明](headInfo/LOG_CONTEXT.md)及可运行示例，更新 [metadata说明](headInfo/METADATA.md)和[认证说明](appMiddleware/AUTH.md)。必须使用返回的新ctx记录后续日志；旧ctx、绑定旧ctx的logger及外层访问日志不自动回写。去重限于合并的上下文字段，业务另加单条/全局同名字段按其自身接口处理。文档同时纠正已不存在的SetBothBusinessCode旧名称引用，未新增兼容接口。
+- **验证** 首轮5组、加入真实RPC内存链路后的最终6组TestLogSync及-race全部通过。原生logx JSON和平台Logrus两种writer实际输出验证UID/业务标识更新、无重复上下文字段、Trace及其他业务字段保留；RPC数组格式、原metadata修改后日志快照不变、空值清除；64次连续更新及自定义字段交错不持续累积同名字段；直接Setter默认格式及原始前导零保留；LogKeys排除字段不被Setter扩大，Token/扩展JSON不自动输出；外部context值（含同类型日志字段切片）、截止时间、取消和metadata父/子副本保持。16goroutine各32次共512个日志分支的UID/业务标识与Trace准确，无竞态及父上下文污染。
+- **链路验证** 实际HTTP Trace→单值头→头上下文→认证链，随后调用真实grpc.ServerOption/ClientInterceptor，通过bufconn验证4个成功请求（匿名/匿名Token/登录公开/登录受保护）及3个拒绝场景（受保护未登录、无效Token、无权限）。API日志为字符串，RPC为字符串列表；RPC子分支修改业务标识不影响RPC父级和API调用方，统一Trace及rpc-name保留，用户JSON/令牌不进入自动字段。认证和白名单行为未改变。
+- **完整检查与范例** 全量构建、原有测试全量编译、gofmt、diff及说明链接核对通过。说明中的main抽取编译并实际运行，解析三条JSON日志，验证UID均为12、业务标识依次catalog/child/catalog且Trace一致。对照本轮开始SHA-256快照，五个原有测试、上一轮文案/词典调整及其他范围外源码保持不变。
+- **实际命令** 平台根目录执行，GOCACHE=/private/tmp/new-platform-context-logs.CYIYrgAK/cache、GOPROXY=off，无下载或新增依赖。两个overlay测试源、配置、源码快照、首轮/最终测试及构建/编译输出、抽取范例源码/二进制/运行输出与独立缓存均位于本轮任务目录；无持久测试文件。
+
+```text
+go test -race -mod=readonly -buildvcs=false -overlay=/private/tmp/new-platform-context-logs.CYIYrgAK/overlay.json -run '^TestLogSync' -count=1 -v ./common-pkg/headInfo -timeout=60s
+go build -mod=readonly -buildvcs=false ./common-pkg/... ./language-pkg/...
+go test -mod=readonly -buildvcs=false ./common-pkg/... ./language-pkg/... -run '^$' -count=1
+go build -mod=readonly -buildvcs=false -o /private/tmp/new-platform-context-logs.CYIYrgAK/example /private/tmp/new-platform-context-logs.CYIYrgAK/example.go
+/private/tmp/new-platform-context-logs.CYIYrgAK/example
+gofmt -l common-pkg/headInfo/logKeys.go common-pkg/headInfo/head.go common-pkg/headInfo/headInfo.go
+git -C common-pkg diff --check
+git diff --check
+```
+
+- **限制** HTTP使用内存请求，真实gRPC走进程内bufconn，无TCP/TLS/部署日志平台联调；原有外部设施集成测试只编译未运行。本机Go1.26.5，未另装Go1.22；日志适配按当前go-zero v1.7.4公开ContextWithFields行为验证，框架升级需复核覆盖行为。Logger/旧ctx不自动刷新，不解析日志正文，手工改metadata仍需显式同步。LogKeys仅初始化时配置，请求期间不得并发修改。API/RPC子项目暂无业务源码，仅更新接入约定。
+- **测试清理** 已在清理前登记实际命令、结果与限制；随后删除两个overlay测试源及配置、源码摘要快照、首轮/最终测试和构建/编译输出、抽取范例源码及二进制/运行输出、全部本轮临时脚本产物与独立缓存。核对任务目录与两个仓库虚拟测试目标均不存在，原有五个测试及摘要不变；上一轮错误文案/词典变更及其他范围外原有文件摘要一致。新增持久文件仅为LOG_CONTEXT使用说明，API/RPC子项目仅更新记录，无新增测试或临时产物。

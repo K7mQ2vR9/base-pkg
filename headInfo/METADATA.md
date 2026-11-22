@@ -48,7 +48,8 @@ RPC 将非法业务 metadata 转换为 **gRPC InvalidArgument**，公开方法�
 - Getter 保持读取**出站** metadata，不自动回退入站字段；RPC 标准入口已完成复制。
 - 缺失、空值、重复或非法 UID 返回 0；两种 IP 的非法或重复值返回空字符串；其他字符串字段重复时返回空字符串。nil ctx 按未设置处理。
 - `GetTerminal` 继续将唯一 IOS/Android 映射为 APP；`GetOriginHostUrl` 保持既有协议文本移除规则，不在本轮改为 URL 解析。
-- `SetTokenUid`、`SetBusinessCode`、`SetBothBusinessCode` 复制后覆盖单个值，不改原上下文、其他字段或 Trace；保留父级取消、截止时间和值，入站/出站分别持有副本。
+- `SetTokenUid` 复制出站 metadata，`SetBusinessCode` 分别复制入站与出站 metadata 后覆盖单个值；不改原上下文、其他字段或 Trace，保留父级取消、截止时间和值。
+- 两个 Setter 同步覆盖 LogKeys 中相应日志字段，HTTP 保持字符串、RPC 保持字符串列表；使用返回的新 ctx 记录后续日志，见 [日志同步说明](LOG_CONTEXT.md)。
 - Setter 不校验格式或身份；写入非法 UID 后，Getter 返回 0，RPC 入口返回明确错误。
 
 创建 metadata 使用 `metadata.Pairs` / `md.Set` 等标准 API，保持键名规范化。`ValidateMetadata` 对直接传入的原始 map 会合并大小写别名检查；不要手工构造混用大小写的重复键后再存入 gRPC 上下文，因为 gRPC 的上下文读取 API 已经会规范化键名，可能覆盖别名信息。

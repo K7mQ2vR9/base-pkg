@@ -80,6 +80,7 @@ func (h *Head) String() string {
 }
 
 // ContextHeadInLog 按共用 LogKeys 选择 HTTP 日志字段，字段值使用当前请求的字符串。
+// 同名字段覆盖，不重复追加；保留其他业务日志字段，后续 Setter 沿用字符串格式。
 func ContextHeadInLog(ctx context.Context, h *Head) context.Context {
 	fields := []logx.LogField{
 		logx.Field(consts.Version, h.Version),
@@ -103,7 +104,8 @@ func ContextHeadInLog(ctx context.Context, h *Head) context.Context {
 			selected = append(selected, field)
 		}
 	}
-	return logx.ContextWithFields(ctx, selected...)
+	ctx = context.WithValue(ctx, metadataLogContextKey{}, false)
+	return contextWithLogFields(ctx, selected...)
 }
 
 // GetFullHead 返回原始请求头，结果可能包含认证凭证。

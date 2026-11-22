@@ -25,6 +25,17 @@ api/
 
 文件名就是语言标识。可复制 [完整示例词典](examples/etc/language) 到项目中，再增补业务词条。JSON 中的 key 可以是原文，也可以是业务 key；查找按完整字符串精确匹配，不去除文案空白、不替换子串。仅配置 `common.internal_error` 不会翻译原文 `Internal Server Error`，需要把实际返回的原文作为 key。
 
+内置未登录、Token 无效及请求解密相关错误的公开原文已去除多余尾部空格，与示例词典一致：
+
+| 原文 key | zh-CN 译文 |
+|---|---|
+| `User not login.` | 用户未登录。 |
+| `Token invalid.` | 令牌无效。 |
+| `Request decryption failed.` | 请求解密失败。 |
+| `Request forbid.` | 请求被拒绝。 |
+
+项目已有词典若为这些内置错误配置了带尾部空格的 key，应同步去除 key 的尾部空格。业务自定义文案和 data 字符串仍按原值精确匹配，框架不会自动 TrimSpace 或兼容旧文案。错误码及认证规则保持不变。
+
 ## 启动接入
 
 `app.ConfigAppServer` 新增独立的 `Language language.Config` 字段，供项目配置嵌入。未填写 `Dir` 时默认使用**进程工作目录**下的 `etc/language`；部署到其他工作目录时配置绝对路径。

@@ -51,12 +51,14 @@ func GetSource(ctx context.Context) string {
 }
 
 // SetTokenUid 复制出站 metadata 后覆盖为单个值，不修改原上下文；空值清除身份值。
+// 同步覆盖 LogKeys 中的用户 ID 日志字段，认证后的日志使用更新值，匿名应显式传入 "0"。
 // 不校验写入格式或身份，非法格式由 Getter 返回 0、RPC 入口拒绝，身份仍须认证回调核实。
 func SetTokenUid(ctx context.Context, value string) context.Context {
 	md, _ := metadata.FromOutgoingContext(ctx)
 	md = md.Copy()
 	md.Set(consts.TokenUid, value)
-	return metadata.NewOutgoingContext(ctx, md)
+	ctx = metadata.NewOutgoingContext(ctx, md)
+	return contextWithLogValue(ctx, consts.TokenUid, value)
 }
 
 // GetContentLanguage 返回唯一的语言文本，缺失、空值或重复返回空字符串。
@@ -70,6 +72,7 @@ func GetBusinessCode(ctx context.Context) string {
 }
 
 // SetBusinessCode 分别复制入站与出站 metadata 并覆盖业务标识，不共享两侧的可变切片。
+// 同步覆盖 LogKeys 中的业务标识日志字段，保留原上下文及其他日志字段。
 func SetBusinessCode(ctx context.Context, value string) context.Context {
 	incomingMD, _ := metadata.FromIncomingContext(ctx)
 	incomingMD = incomingMD.Copy()
@@ -78,7 +81,8 @@ func SetBusinessCode(ctx context.Context, value string) context.Context {
 	outgoingMD, _ := metadata.FromOutgoingContext(ctx)
 	outgoingMD = outgoingMD.Copy()
 	outgoingMD.Set(consts.BusinessCode, value)
-	return metadata.NewOutgoingContext(ctx, outgoingMD)
+	ctx = metadata.NewOutgoingContext(ctx, outgoingMD)
+	return contextWithLogValue(ctx, consts.BusinessCode, value)
 }
 
 // GetBusiness 返回唯一的业务文本，缺失、空值或重复返回空字符串。

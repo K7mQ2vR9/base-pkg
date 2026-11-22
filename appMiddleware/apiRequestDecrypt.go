@@ -14,8 +14,11 @@ import (
 	"github.com/K7mQ2vR9/base-pkg/result/xcode"
 )
 
-var RequestDecryptError error = xcode.New(http.StatusBadRequest, "Request decryption failed. ")
-var RequestBadError error = xcode.New(http.StatusBadRequest, "Request forbid. ")
+// RequestDecryptError 为请求解密失败错误，公开原文不带尾部空白，与本地词典 key 精确匹配。
+var RequestDecryptError error = xcode.New(http.StatusBadRequest, "Request decryption failed.")
+
+// RequestBadError 为请求被拒绝错误，保持原业务码，公开原文与本地词典 key 一致。
+var RequestBadError error = xcode.New(http.StatusBadRequest, "Request forbid.")
 
 // ApiRequestDecryptMiddleware 按当前进程的配置开关解密请求，并对独立使用时的读取施加上限。
 type ApiRequestDecryptMiddleware struct {

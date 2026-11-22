@@ -9,8 +9,10 @@ import (
 )
 
 var (
-	UserNotFound             = New(http.StatusUnauthorized, "User not login. ")
-	TokenInvalid             = New(http.StatusPaymentRequired, "Token invalid. ")
+	// UserNotFound 为未登录错误，公开原文不带尾部空白，与项目本地词典 key 精确匹配。
+	UserNotFound = New(http.StatusUnauthorized, "User not login.")
+	// TokenInvalid 为无效令牌错误，保持原业务码，公开原文与本地词典 key 一致。
+	TokenInvalid             = New(http.StatusPaymentRequired, "Token invalid.")
 	TokenPermissionDenied    = New(http.StatusMethodNotAllowed, "No permission")
 	StatusServiceUnavailable = New(http.StatusServiceUnavailable, "Status service unavailable")
 )
