@@ -22,7 +22,7 @@ var (
 	ErrTraceRequired = errors.New("trace ID is required")
 	// ErrTraceInvalid 表示 ID 格式错误、字段为空或同一字段重复出现。
 	ErrTraceInvalid = errors.New("trace metadata is invalid")
-	// ErrTraceConflict 表示 HTTP 请求 ID 与标准链路或活动上下文的 Trace ID 不同。
+	// ErrTraceConflict 表示请求 ID、W3C 链路或已有活动上下文之间的 Trace ID 不一致。
 	ErrTraceConflict = errors.New("request ID and trace ID must match")
 )
 
@@ -50,7 +50,7 @@ func GetTrace(ctx context.Context) string {
 
 // ExtractTrace 仅从 W3C traceparent/tracestate 恢复 RPC 或消息链路，不读取其他 ID 别名。
 // traceparent 缺失返回 ErrTraceRequired，空值、重复和非法格式返回 ErrTraceInvalid。
-// 原始 headers 不修改；当前活动 Span 属于同一 Trace 时保留它。
+// 原始 headers 不修改，不生成 Trace ID；已有活动 Span 同链路时保留，不同则返回 ErrTraceConflict。
 func ExtractTrace(ctx context.Context, headers map[string][]string) (context.Context, error) {
 	parents, present := headerValues(headers, "traceparent")
 	if !present {
@@ -68,7 +68,10 @@ func ExtractTrace(ctx context.Context, headers map[string][]string) (context.Con
 	if !parent.IsValid() {
 		return ctx, ErrTraceInvalid
 	}
-	if active := trace.SpanContextFromContext(ctx); active.IsValid() && active.TraceID() == parent.TraceID() {
+	if active := trace.SpanContextFromContext(ctx); active.IsValid() {
+		if active.TraceID() != parent.TraceID() {
+			return ctx, ErrTraceConflict
+		}
 		return ctx, nil
 	}
 	return trace.ContextWithRemoteSpanContext(ctx, parent), nil
@@ -76,7 +79,8 @@ func ExtractTrace(ctx context.Context, headers map[string][]string) (context.Con
 
 // ExtractRequestTrace 校验 HTTP 的 X-Request-ID 和标准 traceparent，二者同时存在时必须相同。
 // 请求 ID 必须是非零的 32 位小写十六进制；不接收任意字符串、空值或重复值。
-// 只有请求 ID 时生成独立的 8 字节非零 Span ID 补齐传播上下文，全部缺失返回 ErrTraceRequired。
+// 优先恢复请求中的合法 ID，不生成新 Trace ID；与已有活动链路不同则返回 ErrTraceConflict。
+// 只有请求 ID 且无活动 Span 时生成 8 字节非零 Span ID 补齐上下文，全部缺失返回 ErrTraceRequired。
 func ExtractRequestTrace(ctx context.Context, headers map[string][]string) (context.Context, error) {
 	extracted, err := ExtractTrace(ctx, headers)
 	if err != nil && !errors.Is(err, ErrTraceRequired) {
@@ -104,13 +108,11 @@ func ExtractRequestTrace(ctx context.Context, headers map[string][]string) (cont
 
 // EnsureTrace 沿用活动上下文或出站 W3C 链路，缺失时才生成统一 ID，再同步标准传播字段。
 // RPC 和 MQ 仅使用 traceparent/tracestate；活动链路与 metadata 冲突时返回错误。
+// 仅当活动上下文和出站 traceparent 均缺失时生成新 ID，非法或冲突字段不会触发重新生成。
 func EnsureTrace(ctx context.Context) (context.Context, error) {
 	md, _ := metadata.FromOutgoingContext(ctx)
 	extracted, err := ExtractTrace(ctx, md)
 	if err == nil {
-		if active := GetTrace(ctx); active != "" && active != GetTrace(extracted) {
-			return ctx, ErrTraceConflict
-		}
 		ctx = extracted
 	} else if !errors.Is(err, ErrTraceRequired) {
 		return ctx, err
@@ -137,9 +139,6 @@ func SetTrace(ctx context.Context, value string) (context.Context, error) {
 	if err != nil {
 		return ctx, ErrTraceInvalid
 	}
-	if active := GetTrace(ctx); active != "" && active != value {
-		return ctx, ErrTraceConflict
-	}
 	ctx, err = contextWithTraceID(ctx, id)
 	if err != nil {
 		return ctx, err
@@ -156,8 +155,13 @@ func traceMetadata(ctx context.Context) context.Context {
 	return metadata.NewOutgoingContext(ctx, md)
 }
 
+// contextWithTraceID 绑定已校验的 Trace ID，不生成或替换已有 Trace ID。
+// 同链路直接保留当前 Span；冲突返回原上下文及错误，仅无活动 Span 时随机补齐非零 8 字节 Span ID。
 func contextWithTraceID(ctx context.Context, id trace.TraceID) (context.Context, error) {
-	if active := trace.SpanContextFromContext(ctx); active.IsValid() && active.TraceID() == id {
+	if active := trace.SpanContextFromContext(ctx); active.IsValid() {
+		if active.TraceID() != id {
+			return ctx, ErrTraceConflict
+		}
 		return ctx, nil
 	}
 	var span trace.SpanID

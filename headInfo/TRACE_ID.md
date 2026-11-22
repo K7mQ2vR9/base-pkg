@@ -41,16 +41,24 @@ function newRequestID() {
 
 ## 入口处理与冲突
 
+HTTP 入口先读取并校验请求中的 ID，再初始化链路，不先生成一个 ID 覆盖请求值：有合法 `X-Request-ID` 就复用；只有合法 `traceparent` 时使用其中的 Trace ID，并补齐 `X-Request-ID`。两者都有时须一致；两者都没有时复用已有活动链路，活动上下文和出站链路也都没有时才生成新 ID。原始请求头保持不变，下游使用校验后的请求副本。
+
 | 输入 | 处理规则 |
 |---|---|
 | 只有合法 `X-Request-ID` | 原样作为统一 Trace ID，补齐标准链路上下文 |
 | 只有合法 `traceparent` | 沿用其中的 Trace ID，并同步 `X-Request-ID` |
 | HTTP `X-Request-ID` 与 `traceparent` 同时存在 | 二者的 Trace ID 必须相同 |
-| 所有 ID 和标准链路头都缺失 | 网关生成；绕过网关的 HTTP 入口由公共包兜底生成 |
+| HTTP 所有 ID 和标准链路头都缺失 | 复用已有活动上下文或出站标准链路，均无链路时由网关/API入口生成一次 |
+| 入站 Trace ID 与已有活动 Trace ID 相同 | 保留当前 Span、采样决定和上下文，不重新生成 Trace ID |
+| 入站 Trace ID 与已有活动 Trace ID 不同 | 返回 ErrTraceConflict，保留原上下文，不覆盖、不生成替代 ID |
 | 字段为空、重复、格式错误或相互冲突 | HTTP 返回真实 `400`，RPC 返回 `InvalidArgument`，不进入业务 |
 | RPC 缺少 `traceparent` | 直接拒绝，包括白名单方法；其他字段或已有服务端 Span 均不能替代 |
 
 HTTP 校验失败时可为错误响应建立新的诊断 ID，非法输入不会被当作合法业务 ID 转发。HTTP 随机源失败返回 `500`。网关应在创建自己的服务端 Span 之前执行相同校验和初始化，向下游同时转发 `X-Request-ID` 和标准 `traceparent`。实际网关类型与配置尚未接入本仓库。
+
+`ExtractTrace` 只恢复和校验 W3C 链路，`ExtractRequestTrace` 额外识别 HTTP 请求 ID，两者均不生成 Trace ID。只有请求 ID 且无活动 Span 时，会随机生成非零8字节 Span ID 补齐传播上下文，这不改变请求 ID。`EnsureTrace` 在没有现有链路时负责生成 Trace ID；格式错误或冲突直接返回错误，不走缺失兜底。`SetTrace` 同样拒绝覆盖不同活动链路。HTTP 冲突返回400，RPC 返回 `InvalidArgument`，RabbitMQ 沿用现有冲突拒绝与失败处理。
+
+`traceparent` 的格式为 `版本-TraceID-上游SpanID-标志`，例如 `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`。不同调用可创建不同 Span，因此完整字段可以变化，同一链路的 Trace ID 保持相同。前端仅发送 `X-Request-ID` 即可；上游链路组件可能仅发送标准 `traceparent`，API会恢复其中的 ID。RPC内部只传标准链路字段，不要求额外发送 `X-Request-ID`。
 
 ## API 接入位置
 
@@ -66,7 +74,7 @@ if err != nil {
 
 `app.NewServerWithCORS` 在路由最外层接入统一 ID，先于 go-zero 原生 Trace、日志和业务中间件。Trace 初始化后先执行 [HTTP 单值业务头校验](HTTP_HEADERS.md)，非法头在正文读取、解密和认证之前返回带同一 ID 的统一400。应用中间件及 ApiHeaderMiddleware 只读取已初始化的上下文，不再承担链路初始化。
 
-链路路由由 `app.NewServerWithCORS` 内部装配，无需手动追加路由包装选项。原生 `Middlewares.MaxBytes` 启用时，内部使用 `restConf.MaxBytes` 预检查声明长度，超限返回带 Trace 的统一 413；关闭时不执行此项预检查，实际读取限制仍需装配 [请求体中间件](../app/REQUEST_BODY.md)。自定义 NotFound、NotAllowed 可通过构造函数选项设置；CORS 使用构造函数的配置参数，避免用其他 CORS 组件或裸 Router 覆盖入口。仅有 ID 的新链路按服务配置的采样比例决定是否采样，有标准上游上下文时保留其采样决定，采样结果不改变统一 ID。
+链路路由由 `app.NewServerWithCORS` 内部装配，不接受 `rest.RunOption`，调用方不能通过构造参数替换路由或 CORS。原生 `Middlewares.MaxBytes` 启用时，内部使用 `restConf.MaxBytes` 预检查声明长度，超限返回带 Trace 的统一 413；关闭时不执行此项预检查，实际读取限制仍需装配 [请求体中间件](../app/REQUEST_BODY.md)。自定义404/405可通过可选的 `app.ServerHandlerConfig` 中 `NotFoundHandler`、`NotAllowedHandler` 字段设置，省略或字段为 nil 时使用默认处理；处理器仍位于统一入口内部，详见 [CORS与回退处理器接入](../app/CORS.md)。仅有 ID 的新链路按服务配置的采样比例决定是否采样，有标准上游上下文时保留其采样决定，采样结果不改变统一 ID。
 
 普通 HTTP 响应通过 `X-Request-ID` 返回该值，响应正文继续使用 `trace` 字段。公共 CORS 中间件允许浏览器读取 `X-Request-ID`。业务统一调用 `headInfo.GetTrace(ctx)` 获取此 ID，不从未校验的原始请求头再次取值。
 

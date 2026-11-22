@@ -52,7 +52,28 @@ func BuildAPI(restConf rest.RestConf, config app.ConfigAppServer,
 
 服务策略在最外层绑定，正常、Trace/请求头错误、正文限制、AES/认证/并发错误，以及404/405都使用同一来源规则。Trace和头校验仍先于预检放行；声明长度检查后，有效 OPTIONS 在路由入口返回204（含未注册路径），不进入正文、认证或业务。普通请求的业务处理顺序不变。
 
-每个 Server 独立保存只读策略，不设置全局变量。API 服务统一通过 `app.NewServerWithCORS` 接入来源和凭证配置，链路路由由包内私有函数装配，无需手动追加路由包装选项。后续可设置 NotFound/NotAllowed 处理器，勿再叠加 go-zero 的 `WithCors`、`WithCustomCors` 或裸 Router 覆盖入口策略。
+每个 Server 独立保存只读策略，不设置全局变量。API 服务统一通过 `app.NewServerWithCORS` 接入来源和凭证配置，链路路由由包内私有函数装配。构造函数不接受 `rest.RunOption`，不能再传入 `rest.WithRouter`、`rest.WithCors` 或 `rest.WithCustomCors` 覆盖统一入口。
+
+### 自定义 404 / 405
+
+可选的第三个参数为 `app.ServerHandlerConfig`，仅在代码中配置，不放入 YAML。最多传一项，省略、零值或对应字段为 nil 时沿用 go-zero 默认处理；传入多项返回初始化错误。现有两参数调用方式保持。
+
+```go
+// notFound 和 notAllowed 为业务提供的 http.Handler；不需要自定义的字段可留空。
+server, err := app.NewServerWithCORS(restConf, corsConfig, app.ServerHandlerConfig{
+    NotFoundHandler: notFound,
+    NotAllowedHandler: notAllowed,
+})
+if err != nil {
+    return err
+}
+```
+
+`NotFoundHandler` 处理未匹配路径，默认返回原生404；`NotAllowedHandler` 处理路径存在但方法不匹配的请求，默认返回原生405及 `Allow` 头。自定义处理器自行写入状态码和正文，并负责需要的响应头（包括自定义405的 `Allow`），不要覆盖入口已设置的 CORS 和 `X-Request-ID`。处理器可能并发执行，共享状态需由业务保证并发安全。
+
+回退处理器只在统一 Trace、单值头校验、声明长度预检查和 CORS 处理之后执行，不能替换路由或绕过上述入口。有效 OPTIONS 仍返回204，不执行自定义404/405。回退路径不经过已注册业务路由的认证等应用中间件，不应在这些处理器中放置需要登录认证的业务操作。
+
+旧的 `rest.WithNotFoundHandler` / `rest.WithNotAllowedHandler` 参数改为以上结构字段；其余原生运行选项不再透传，无兼容分支。
 
 ## 授权头和预检行为
 

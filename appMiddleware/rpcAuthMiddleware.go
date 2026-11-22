@@ -38,6 +38,7 @@ func NewRpcAuthMiddleware(check CheckRPCRequestFunc) (*RpcAuthMiddleware, error)
 
 // ServerOption 在原生 gRPC 链路拦截器前校验 W3C 上下文与业务 metadata 的单值/UID/IP 规则。
 // 缺失或非法链路、已知业务字段重复或格式非法均直接拒绝，包括公开方法。
+// 入站 Trace 与已有活动链路不一致同样返回 InvalidArgument；相同则保留当前 Span，不生成新 ID。
 // go-zero 使用 server.AddOptions(auth.ServerOption(white))；同一 Server 仅设置一次主 UnaryInterceptor。
 func (m *RpcAuthMiddleware) ServerOption(getPathWhite PathWhiteHandle) grpc.ServerOption {
 	return grpc.UnaryInterceptor(m.handle(getPathWhite))

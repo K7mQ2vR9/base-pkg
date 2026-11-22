@@ -40,9 +40,7 @@ func messageTraceContext(ctx context.Context, headers amqp.Table) (context.Conte
 	if err != nil {
 		return ctx, err
 	}
-	if active := headInfo.GetTrace(ctx); active != "" && active != headInfo.GetTrace(extracted) {
-		return ctx, headInfo.ErrTraceConflict
-	}
+	// ExtractTrace 已统一校验活动链路冲突；合法消息只同步同一 Trace 的传播字段。
 	return headInfo.EnsureTrace(extracted)
 }
 
