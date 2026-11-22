@@ -26,10 +26,7 @@ import (
 )
 
 const (
-	AccessTokenExpireDuration = 7 * 24 * time.Hour
-	AdminToken                = 1
-	UserToken                 = 2
-	hs256MinKeyBytes          = 32
+	hs256MinKeyBytes = 32
 )
 
 type Claims struct {
@@ -37,26 +34,42 @@ type Claims struct {
 	Source       string `json:"source"`
 	Sign         string `json:"sign"`
 	BusinessCode string `json:"Business_code"`
-	RoleId       int64  `json:"role_id"`
 	TokenType    int    `json:"token_type"`
 	jwt.StandardClaims
 }
 
-func GenerateToken(jwtSecret string, uid int64, source string, sign string, businessCode string, roleId int64, tokenType int) (accessToken string, err error) {
-	key, err := jwtSigningKey(jwtSecret)
+// GenerateTokenParams 定义签发 JWT 的参数，按值传入，不修改调用方配置。
+type GenerateTokenParams struct {
+	// JWTSecret 为 HS256 签名密钥，至少32字节且不能全为空白，使用原始字节签名。
+	JWTSecret string
+	// Uid 为业务提供的用户 ID，本函数不增加身份或范围校验。
+	Uid int64
+	// Source 为来源渠道，按原值写入 Claims。
+	Source string
+	// Sign 为业务会话标识，按原值写入 Claims。
+	Sign string
+	// BusinessCode 为业务标识，按原值写入 Claims。
+	BusinessCode string
+	// ExpireDuration 为自当前时刻起的有效时长，使用 time.Duration，例如24*time.Hour。
+	// 无默认值，零值按当前时刻到期；沿用现有时长处理，签发时不新增正数校验。
+	ExpireDuration time.Duration
+}
+
+// GenerateToken 使用结构体参数签发 HS256 Token，返回值及 Claims 格式保持不变。
+// 有效期使用调用方提供的时长，exp 精度为 Unix 秒；密钥无效时返回空 Token 和错误。
+func GenerateToken(params GenerateTokenParams) (accessToken string, err error) {
+	key, err := jwtSigningKey(params.JWTSecret)
 	if err != nil {
 		return "", err
 	}
 
 	nowTime := time.Now()
-	expireTime := nowTime.Add(AccessTokenExpireDuration)
+	expireTime := nowTime.Add(params.ExpireDuration)
 	claims := Claims{
-		Uid:          uid,
-		Source:       source,
-		Sign:         sign,
-		RoleId:       roleId,
-		TokenType:    tokenType,
-		BusinessCode: businessCode,
+		Uid:          params.Uid,
+		Source:       params.Source,
+		Sign:         params.Sign,
+		BusinessCode: params.BusinessCode,
 		StandardClaims: jwt.StandardClaims{
 			ExpiresAt: expireTime.Unix(),
 			Issuer:    "test-user",
@@ -71,6 +84,9 @@ func GenerateToken(jwtSecret string, uid int64, source string, sign string, busi
 	return accessToken, err
 }
 
+// ParseToken 验证 HS256 签名及时间声明，exp 必须是正数 Unix 秒且严格晚于校验时刻。
+// 与底层解析器使用同一 jwt.TimeFunc（默认服务端当前时间），到期当秒即拒绝，不增加宽限时间。
+// 失败不返回 Claims；密钥要求、Claims 字段和其他时间声明校验保持不变。
 func ParseToken(jwtSecret string, token string) (*Claims, error) {
 	key, err := jwtSigningKey(jwtSecret)
 	if err != nil {
@@ -88,19 +104,8 @@ func ParseToken(jwtSecret string, token string) (*Claims, error) {
 	if parsedToken == nil || !parsedToken.Valid {
 		return nil, errors.New("invalid token")
 	}
-	return claims, nil
-}
-
-// ParseRefreshToken 校验用于刷新的访问令牌，只允许有效期内的管理员或用户令牌。
-func ParseRefreshToken(jwtSecret string, accessToken string) (*Claims, error) {
-	claims, err := ParseToken(jwtSecret, accessToken)
-	if err != nil {
-		return nil, errors.WithMessage(err, "failed to parse access token for refresh")
-	}
-	if claims.TokenType != AdminToken && claims.TokenType != UserToken {
-		return nil, errors.New("unsupported token type for refresh")
-	}
-	if claims.ExpiresAt <= time.Now().Unix() {
+	// 底层 StandardClaims 将 exp 视为可选且允许相等；平台访问令牌统一要求必填和严格未到期。
+	if claims.ExpiresAt <= 0 || claims.ExpiresAt <= jwt.TimeFunc().Unix() {
 		return nil, errors.New("token has expired or has no expiration")
 	}
 	return claims, nil

@@ -58,7 +58,10 @@
 | 31 | 白名单仅豁免用户必须登录、统一校验与错误返回 | 已完成、验证并确认 |
 | 32 | 内置错误文案与项目本地词典对齐 | 已完成、验证并确认 |
 | 33 | 认证结果、业务标识与上下文日志字段同步 | 已完成、验证并确认 |
-| 34 | 认证前错误响应的语言提前注入与统一读取 | 已开发并验证，待确认 |
+| 34 | 认证前错误响应的语言提前注入与统一读取 | 已完成、验证并确认 |
+| 35 | API panic 恢复与响应重复写入处理 | 已按用户要求撤回，不继续开发 |
+| 36 | JWT 普通解析与刷新有效期校验统一 | 已完成、验证并确认 |
+| 37 | GenerateToken 结构体参数与明确时长类型 | 已开发并验证，待确认 |
 
 ## 开发记录
 
@@ -1247,3 +1250,73 @@ git diff --check
 
 - **限制** 实际API使用内存HTTP，无TCP/TLS/网关或生产词典挂载联调；原有外部设施集成测试只编译未运行，未另装Go1.22，本机Go1.26.5。为确定各拒绝路径，临时API配置关闭可选日志/统计/熔断/负载丢弃/超时/原生MaxConns，Trace/原生MaxBytes等保持启用；未验证原生组件自行生成错误的译文。RPC未改，仅验证metadata保留，不另启RPC服务。API/RPC子项目暂无业务源码，本轮只更新接入约定。
 - **测试清理** 已在清理前登记实际命令、结果及限制；随后删除两个overlay测试源及配置、源码摘要快照、首轮/完整/缺词条测试输出、构建/编译输出、两份抽取范例源码及二进制/运行输出、词典临时副本、全部本轮脚本产物和独立构建缓存。核对任务目录与两个仓库虚拟测试目标均不存在，原有五个测试及摘要不变；无新增持久文件，范围外原有源码、上轮日志同步、AES/认证/响应/Trace/顺序/错误码及词典JSON摘要一致。API/RPC子项目仅更新记录，无新增测试或临时产物。
+
+
+### 2026-11-22 / DEV-20261122-004 / 按用户要求撤回第35项
+
+- **决定** 用户明确要求撤回第35项API panic恢复改动，停止该项开发，不作为已完成功能交付。恢复本轮修改的app/start.go、app/traceServer.go、appMiddleware/apiHeader.go及result/responseWriter.go，删除本轮新增recovery.go、recovery_writer.go、recovery_interfaces.go；第34项及之前内容保留，不改认证/白名单/语言/Trace等现有规则。
+- **已执行验证** 撤回前初次构建通过，第一轮8组及-race通过；扩展到实际API后，英文正常成功响应夹具误期望原业务key而实际为Enabled，导致该测试组的两个子场景失败，修正临时预期后最终13组及-race通过。覆盖提交前/提交后panic、序列化/AES/认证/正文异常、ErrAbortHandler、原生超时包装、64种writer接口组合、FlushError/ResponseController、net.Pipe接管连接、超时后异常和256并发请求。上述测试仅说明已尝试实现的验证状态，相关实现与测试均按用户要求撤回，不代表当前基线新增这些行为。
+- **实际命令** 平台根目录使用GOCACHE=/private/tmp/new-platform-api-recovery.UD8lBECW/cache、GOPROXY=off执行，无新增依赖或下载；首轮、扩展轮及修正后完整验证均保存在任务目录。初次全量构建后有恢复逻辑调整，未执行最终全量构建/原有测试编译，不将初次构建结果冒充最终检查。
+
+```text
+go build -mod=readonly -buildvcs=false ./common-pkg/... ./language-pkg/...
+go test -race -mod=readonly -buildvcs=false -overlay=/private/tmp/new-platform-api-recovery.UD8lBECW/overlay.json -run '^TestRecovery' -count=1 -v ./common-pkg/appMiddleware -timeout=60s
+go test -race -mod=readonly -buildvcs=false -overlay=/private/tmp/new-platform-api-recovery.UD8lBECW/overlay.json -run '^TestRecovery' -count=1 -v ./common-pkg/appMiddleware ./common-pkg/app -timeout=60s
+git -C common-pkg diff --check
+```
+
+- **限制与清理前登记** 验证使用内存HTTP、go-zero原生包装、net.Pipe和模拟writer，未进行TCP/TLS/部署联调；本机Go1.26.5，原有外部集成测试未运行。四个overlay测试源、配置、源码摘要快照、测试与构建输出、独立缓存及本轮生成产物均须删除。回退前已确认四个原有文件的HEAD内容摘要与本轮开始快照一致，接下来逐文件恢复并核对全量快照，清理后追加核对结果。
+
+- **撤回与清理结果** 已逐文件恢复四个原有源码文件，并删除三个本轮新增实现文件；对照本轮开始SHA-256快照，除本撤回记录外，所有原有公共包文件内容完全一致，第34项及之前实现保持。清理前登记后，删除四个overlay测试源及配置、全部构建/测试输出、源码快照、生成脚本产物与独立缓存；核对任务目录、四个仓库虚拟测试目标及三个新增实现均不存在，原有五个测试及摘要保留。公共包仅开发记录存在差异，无第35项代码残留。
+
+
+### 2026-11-22 / DEV-20261122-005 / JWT有效期校验统一
+
+- **用户确认与范围** 第36项按已确认方案开发：普通ParseToken及ParseRefreshToken都要求exp存在且严格晚于当前校验秒，缺失/无效/已到期/到期当秒均拒绝。默认7天签发、HS256、密钥要求、Claims字段、现有接口和匿名白名单规则保持。第34项经后续开发确认，第35项继续保持撤回，不恢复任何相关代码。
+- **实现** 仅修改jwtToken/jwt.go：签名及原有Claims校验通过后，ParseToken要求ExpiresAt>0并且ExpiresAt>jwt.TimeFunc().Unix()，失败返回nil Claims及错误。沿用底层解析器同一时间来源（默认time.Now），不增加宽限。ParseRefreshToken直接复用ParseToken，再执行已有AdminToken/UserToken类型检查，删除原独立time.Now有效期判断。验证签名过程中跨过到期秒也拒绝；不扩展普通TokenType/UID/issuer/audience校验或新增配置。
+- **使用说明** 新增 [JWT说明与范例](jwtToken/README.md)，说明必填exp、到期边界、刷新只校验不自动签发、Claims与既有规则保留。旧无exp或到期当秒仍被普通解析接受的Token现在会返回错误，不增加兼容分支。API认证回调应返回该error，不得把失败作为0,nil匿名结果。
+- **定向验证** 6组TestJWTExpiry及-race全部通过。普通/刷新两种解析覆盖缺失、null、0、负数、过期、等于当前秒、未来1秒、MaxInt64及字符串/小数/布尔/对象错误类型；到期前1ns、到期时、到期后1ns/1s及验签过程中跨越到期边界，无sleep的固定时钟验证。错误密钥、篡改签名、HS384、none、未来nbf/iat、短密钥/全空白密钥继续拒绝，失败不返回Claims。GenerateToken的两种类型保持默认7天、HS256、原业务字段/JSON标签及Issuer；普通未知TokenType策略及刷新类型限制保持原样。
+- **并发与API联动** 稳定只读测试时钟下16goroutine各32轮、每轮两种解析共1024次调用，正常/到期结果正确，无竞态。实际Trace→单值头/语言→请求头上下文→认证中间件覆盖两路径×六种Token共12场景：无Token仅白名单匿名，缺失/0/到期/已过期exp即使白名单也返回原业务402，受保护无Token401，正常Token注入原UID，Trace和HTTP200业务协议保持。使用已签名测试Token，不输出Token或密钥。
+- **完整核对与范例** 当前go.work仅包含common-pkg，因此全量构建/原有测试编译按./common-pkg/...执行；未恢复用户已移除的旧language-pkg工作区引用。README范例抽取编译并通过JWT_SECRET注入临时测试值实际运行，输出12 true，不打印密钥/Token。gofmt、diff及说明链接通过；SHA-256对照本轮开始快照，原有五个测试、用户已有go.mod/go.sum改动、go.work/go.work.sum及范围外公共包文件保持不变。
+- **实际命令** 平台根目录执行，GOCACHE=/private/tmp/new-platform-jwt-expiry.vtFJbArJ/cache、GOPROXY=off，无下载或新增依赖。两个overlay测试源、配置、原始文件/工作区摘要快照、测试/构建/编译输出、抽取范例源码/二进制/运行输出及独立缓存均在本轮任务目录；仓库无新增持久测试文件。
+
+```text
+go test -race -mod=readonly -buildvcs=false -overlay=/private/tmp/new-platform-jwt-expiry.vtFJbArJ/overlay.json -run '^TestJWTExpiry' -count=1 -v ./common-pkg/jwtToken -timeout=60s
+go build -mod=readonly -buildvcs=false ./common-pkg/...
+go test -mod=readonly -buildvcs=false ./common-pkg/... -run '^$' -count=1
+go build -mod=readonly -buildvcs=false -o /private/tmp/new-platform-jwt-expiry.vtFJbArJ/example /private/tmp/new-platform-jwt-expiry.vtFJbArJ/example.go
+# 通过JWT_SECRET注入本轮临时32字节测试值，不记录或输出值
+/private/tmp/new-platform-jwt-expiry.vtFJbArJ/example
+gofmt -l common-pkg/jwtToken/jwt.go
+git -C common-pkg diff --check
+git diff --check
+```
+
+- **限制** JWT测试通过真实HS256签名及内存HTTP，未进行部署时钟/NTP、生产密钥或真实API/RPC联调；其他业务子项目未修改或测试。原有外部设施集成测试仅编译未执行，本机Go1.26.5，未另装Go1.22。测试临时替换上游jwt.TimeFunc后恢复，替换期间不并发写时钟；生产未新增时钟hook或可变全局配置。本次不调整令牌撤销、续签策略、issuer/audience或最大可接受时长。
+- **测试清理** 已在清理前登记实际命令、结果与限制；随后删除两个overlay测试源及配置、原始/工作区摘要快照、测试/构建/编译输出、抽取范例源码及二进制/运行输出、全部本轮临时脚本产物和独立构建缓存。核对任务目录及两个仓库虚拟测试目标均不存在，原有五个测试及摘要不变；范围外原有源码、用户已有go.mod/go.sum整理、go.work/go.work.sum和第35项撤回状态保持。新增持久文件仅为JWT使用说明；API/RPC目录仅更新记录，其他业务子项目未新增或删除测试/产物。
+
+
+### 2026-11-22 / DEV-20261122-006 / GenerateToken结构体参数
+
+- **用户确认与基线** 用户确认将GenerateToken参数改为GenerateTokenParams结构体，ExpireDuration使用time.Duration，直接替换旧签名，保留当前自定义时长/Claims及解析规则。开始时用户已自行改为六个位置参数（密钥/UID/Source/Sign/BusinessCode/纳秒int64），移除原固定7天/角色参数/刷新类型限制；本轮按这一最新基线调整，不恢复旧设计。第36项完成确认，第35项继续撤回。
+- **实现** 新增按值传入的GenerateTokenParams，包含JWTSecret、Uid、Source、Sign、BusinessCode、ExpireDuration，字段和公开接口均有中文用途/单位/零值注释。签发读取结构体字段，time.Now().Add直接接受time.Duration，返回类型、HS256、密钥验证、Claims标签、issuer及当前TokenType默认内容保持不变；不增加UID/业务字段或时长正数校验，无默认有效期，零/负时长沿用签发即过期行为，exp精度仍为Unix秒。旧多参数函数不保留兼容入口。
+- **并行工作区变化** 开发过程中检测到ParseRefreshToken已从工作区另行移除（非本项删除），本轮保留此修改，不恢复函数。初轮临时测试因此报undefined: platform.ParseRefreshToken；核对当前源码后，仅调整测试和说明为现有GenerateToken/ParseToken接口，最终通过。当前README也同步清理之前已过时的固定7天、角色/类型参数和刷新专用接口示例，历史记录保留。
+- **使用说明与调用方** 更新 [JWT参数及范例](jwtToken/README.md)，使用ExpireDuration:24*time.Hour，原int64秒配置应明确乘time.Second。当前工作区Go源码中检索到GenerateToken的引用只有函数定义，没有其他业务Go调用点需要迁移；外部调用方需迁移为结构体形式。
+- **验证** 最终5组TestJWTParams及-race全部通过。3秒/15分钟/24小时/7天真实签发并解析，验证字段值/Unicode及空白保留、HS256签名、exp单位和JSON标签，不将参数密钥/时长写入Claims，不恢复role_id参数。覆盖UID=0及可选业务字段为空、短/空/全空白密钥拒绝、密钥首尾空白不自动裁剪；零/负/极小值/极大值time.Duration与原处理一致，小于一秒按实际Unix秒截断核对。ParseToken继续拒绝缺失/0/过去/相等exp，未来exp通过且当前类型策略保持。16goroutine各16次共256个结构体参数签发/解析，UID/业务标识不串用，无竞态。
+- **范例与完整检查** README新范例抽取编译，通过JWT_SECRET注入临时测试值运行输出12 catalog，不输出密钥/Token。按当前单模块go.work执行全量构建、原有测试全量编译，gofmt、diff和说明链接检查通过。SHA-256核对五个原有测试、用户已有go.mod/go.sum整理、go.work/go.work.sum及范围外原有公共包文件保持不变；其他业务子项目源码和测试均未改动。
+- **实际命令** 平台根目录执行，GOCACHE=/private/tmp/new-platform-jwt-params.TuFCiygj/cache、GOPROXY=off，无新增依赖或下载。单个overlay测试源/配置、原始文件及工作区摘要快照、初次失败/最终通过输出、构建/原有测试编译输出、抽取范例源码/二进制/运行输出和独立缓存均在本轮任务目录，仓库无新增持久测试文件。
+
+```text
+go test -race -mod=readonly -buildvcs=false -overlay=/private/tmp/new-platform-jwt-params.TuFCiygj/overlay.json -run '^TestJWTParams' -count=1 -v ./common-pkg/jwtToken -timeout=60s
+go build -mod=readonly -buildvcs=false ./common-pkg/...
+go test -mod=readonly -buildvcs=false ./common-pkg/... -run '^$' -count=1
+go build -mod=readonly -buildvcs=false -o /private/tmp/new-platform-jwt-params.TuFCiygj/example /private/tmp/new-platform-jwt-params.TuFCiygj/example.go
+# 运行时通过JWT_SECRET注入本轮临时测试值，不记录或输出值
+/private/tmp/new-platform-jwt-params.TuFCiygj/example
+gofmt -l common-pkg/jwtToken/jwt.go
+git -C common-pkg diff --check
+git diff --check
+```
+
+- **限制** 使用真实JWT签名与本地解析，未进行生产密钥、API/RPC或部署联调；其他业务模块未编译或测试。原有外部设施集成测试只编译未执行，本机Go1.26.5，未另装Go1.22。未加入时长默认值、正数校验或新的业务认证规则；调用方应显式提供有效时长。ParseRefreshToken的移除来自并行工作区变化，本轮只按最新接口验证，不把该移除归入结构体重构。
+- **测试清理** 已在清理前登记实际命令、结果、接口变动导致的测试编译失败及限制；随后删除overlay测试源及配置、原始/工作区摘要快照、初次失败与最终通过输出、两次构建/原有测试编译输出、抽取范例源码及二进制/运行输出、全部本轮临时脚本产物和独立构建缓存。核对任务目录及仓库虚拟测试目标均不存在，原有五个测试及摘要不变；未新增持久文件。范围外原有源码、用户已有go.mod/go.sum整理及go.work/go.work.sum保持，另行移除的ParseRefreshToken未恢复，其他业务项目测试和文件未改动。
