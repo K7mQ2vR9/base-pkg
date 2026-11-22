@@ -47,6 +47,8 @@ RPC 原终端信息使用 `client-user-agent`，因为 `user-agent` 是 gRPC 自
 
 本项目实际读取的令牌头是 `authorization-jwt`，本轮不新增其他令牌别名。UID、角色和客户端 IP 仍从认证及可信代理逻辑获得，不将客户端随意提供的同名头直接作为身份或地址。
 
+后续 ApiHeaderMiddleware 将 Head 写入出站 metadata 时，保留前置中间件已写入的自定义字段及多值，平台字段则按当前请求覆盖（空值也覆盖），避免继承旧用户身份。具体覆盖和W3C边界见 [metadata合并规则](METADATA.md)。仅显式写入ctx出站metadata的自定义字段会保留，不会自动转发所有HTTP头。
+
 ## 错误响应与执行顺序
 
 ```text

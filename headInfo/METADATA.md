@@ -56,6 +56,51 @@ RPC 将非法业务 metadata 转换为 **gRPC InvalidArgument**，公开方法�
 
 HTTP 入口的已知单值业务头现在按 [HTTP 请求头规则](HTTP_HEADERS.md) 校验，与 RPC 字段集合分别管理。登录用户扩展 JSON 仍不自动复制为 RPC metadata。
 
+## 请求头装配与已有字段合并
+
+`HeadInMetadata(ctx, head)` 在已有**出站** metadata 副本上覆盖 Head 的15个平台字段，保留其他自定义字段及其多值顺序，包含通过 `metadata.AppendToOutgoingContext` 追加的内容。它不从入站 metadata 自动补字段，不修改父上下文或其他分支。
+
+平台字段包括令牌、用户ID/角色、双IP、请求路径、版本/来源、业务/业务标识、语言、Origin、时区、终端UA和设备标识。同名平台字段无论旧值有多少个，均被当前 Head 覆盖为单值；当前值为空时也覆盖为空。因此 HTTP 入口不会因保留自定义字段而沿用父上下文的旧用户身份、角色或令牌。后续身份仍由认证回调确认，不信任客户端自填UID/角色头。
+
+原出站 `traceparent`/`tracestate` 先清除，仅从当前活动 Trace 上下文按既有规则重新注入，不采用 `Head.Trace` 或旧出站字段作为链路来源；没有活动 Trace 时不会在此生成ID，须按标准入口先初始化链路。`rpc-name` 不属于 Head 的字段，保留至客户端拦截器按当前目标覆盖。
+
+不要把只应在API进程内使用的敏感数据写入出站metadata；自定义字段现在会继续传入RPC。用户扩展JSON仍只通过请求ctx保留，不自动成为metadata。自定义字段不会因此加入日志名单，也不新增未知字段校验、旧名称映射或业务身份认证规则。
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+
+    "github.com/K7mQ2vR9/base-pkg/consts"
+    "github.com/K7mQ2vR9/base-pkg/headInfo"
+    "google.golang.org/grpc/metadata"
+)
+
+func main() {
+    ctx, err := headInfo.SetTrace(context.Background(), "1234567890abcdef1234567890abcdef")
+    if err != nil {
+        panic(err)
+    }
+    ctx = metadata.AppendToOutgoingContext(ctx,
+        "custom-tags", "one", "custom-tags", "two",
+        consts.TokenUid, "999",
+    )
+    // 请求头装配前的身份不能继承到新请求，当前空UID覆盖旧值。
+    next := headInfo.HeadInMetadata(ctx, headInfo.Head{
+        ReqPath: "/items",
+        BusinessCode: "catalog",
+        ContentLanguage: "zh-CN",
+    })
+    md, _ := metadata.FromOutgoingContext(next)
+    fmt.Println(md.Get("custom-tags"), headInfo.GetTokenUid(next), headInfo.GetBusinessCode(next))
+    fmt.Println(headInfo.GetTokenUid(ctx), headInfo.GetTrace(next))
+}
+```
+
+输出为 `[one two] 0 catalog` 和 `999 1234567890abcdef1234567890abcdef`：自定义多值保留，新请求的旧身份被清除，原分支和统一Trace保持。
+
 ## 本地读写示例
 
 以下 main 可直接运行，不连接外部服务，只演示结构和 Getter，不是认证实现。

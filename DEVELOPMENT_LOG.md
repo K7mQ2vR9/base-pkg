@@ -61,7 +61,8 @@
 | 34 | 认证前错误响应的语言提前注入与统一读取 | 已完成、验证并确认 |
 | 35 | API panic 恢复与响应重复写入处理 | 已按用户要求撤回，不继续开发 |
 | 36 | JWT 普通解析与刷新有效期校验统一 | 已完成、验证并确认 |
-| 37 | GenerateToken 结构体参数与明确时长类型 | 已开发并验证，待确认 |
+| 37 | GenerateToken 结构体参数与明确时长类型 | 已完成、验证并确认 |
+| 38 | 请求头装配保留已有出站自定义 metadata | 已开发并验证，待确认 |
 
 ## 开发记录
 
@@ -1320,3 +1321,31 @@ git diff --check
 
 - **限制** 使用真实JWT签名与本地解析，未进行生产密钥、API/RPC或部署联调；其他业务模块未编译或测试。原有外部设施集成测试只编译未执行，本机Go1.26.5，未另装Go1.22。未加入时长默认值、正数校验或新的业务认证规则；调用方应显式提供有效时长。ParseRefreshToken的移除来自并行工作区变化，本轮只按最新接口验证，不把该移除归入结构体重构。
 - **测试清理** 已在清理前登记实际命令、结果、接口变动导致的测试编译失败及限制；随后删除overlay测试源及配置、原始/工作区摘要快照、初次失败与最终通过输出、两次构建/原有测试编译输出、抽取范例源码及二进制/运行输出、全部本轮临时脚本产物和独立构建缓存。核对任务目录及仓库虚拟测试目标均不存在，原有五个测试及摘要不变；未新增持久文件。范围外原有源码、用户已有go.mod/go.sum整理及go.work/go.work.sum保持，另行移除的ParseRefreshToken未恢复，其他业务项目测试和文件未改动。
+
+
+### 2026-11-22 / DEV-20261122-007 / HeadInMetadata保留自定义字段
+
+- **用户确认与范围** 第38项按确认实施：HeadInMetadata复制已有出站metadata，在副本覆盖当前Head字段（空值也覆盖），保留自定义字段及多值，W3C按活动Trace重新注入，父上下文不修改。第37项经用户继续下一项确认，第35项继续撤回。仅修改headInfo/head.go及当前使用说明，不调整认证、白名单、JWT、语言、日志实现或RPC拦截器。
+- **实现** 先构造原有15个Head平台字段，再复制metadata.FromOutgoingContext的结果，逐字段Set覆盖为单值，杜绝旧重复值、旧UID/角色/令牌通过合并继承。其他出站字段和值顺序保留，包含AppendToOutgoingContext的追加内容；不从入站metadata补字段。先清除旧出站traceparent/tracestate，再调用既有traceMetadata按活动Trace注入；无活动Trace时不生成ID或采用Head.Trace，保持原重建metadata时不会继承旧W3C字段的语义。rpc-name不在Head字段中，保留至客户端拦截器按目标覆盖。
+- **说明** 更新 [metadata合并规则及示例](headInfo/METADATA.md)和 [HTTP入口](headInfo/HTTP_HEADERS.md)，明确仅保留显式写入出站metadata的自定义字段，不自动转发HTTP头；用户扩展JSON不自动进入metadata，敏感进程内数据不应放在出站metadata。函数签名及现有头名不变，不新增别名或未知字段校验，不扩大日志名单。
+- **验证** 首轮5组及-race通过，补充真实RPC内存链路后最终6组TestMetadataMerge及-race全部通过。15字段各用非空/全空Head覆盖旧重复值，检查自定义多值/空字符串/二进制/rpc-name保留，ValidateMetadata可通过；已有AppendToOutgoingContext多段自定义值顺序保持；无出站/nil/空metadata正常初始化。入站独立、父级metadata/切片不污染、额外context值/取消/截止时间保留。W3C测试覆盖有效活动Trace/Span/TraceState覆盖旧链路与伪Head.Trace、没有活动Trace时清除旧W3C字段不生成ID。16goroutine各32次共512个分支的UID/业务标识、自定义多值和Trace隔离，无竞态。
+- **实际HTTP→RPC** 使用Trace→单值头/语言→ApiHeader→认证组件，经真实grpc.ServerOption及ClientInterceptor通过bufconn调用服务，验证匿名与登录请求。API上游metadata含自定义多值和追加值、旧UID/角色/令牌及业务标识；HTTP伪UID/角色不采用，旧身份清空后仅认证回调可写入12，匿名为0；自定义字段完整到达调用方认证与RPC业务，语言/业务/IP/统一Trace/rpc-name正确，父上下文不变。未把自定义metadata加入响应外的自动日志字段。
+- **范例及完整检查** METADATA.md三份Go范例抽取编译通过，两份main实际运行：新示例输出[one two] 0 catalog / 999及统一Trace，既有示例12 192.0.2.1 / 0 true / 12保持。全量构建、原有测试编译、gofmt、diff及说明链接检查通过。SHA-256对照本轮开始快照，五个原有测试、JWT参数重构、用户已有依赖/工作区、Trace/认证/白名单/日志/语言及其他范围外公共包源码不变。
+- **实际命令** 平台根目录执行，GOCACHE=/private/tmp/new-platform-metadata-merge.BIcDXLg3/cache、GOPROXY=off，无下载或新增依赖。两个overlay测试源及配置、原始文件/工作区摘要快照、首轮/最终测试及构建/编译输出、三份范例源码/编译产物、两份运行输出和独立缓存均在任务目录；仓库无新增持久测试文件。
+
+```text
+go test -race -mod=readonly -buildvcs=false -overlay=/private/tmp/new-platform-metadata-merge.BIcDXLg3/overlay.json -run '^TestMetadataMerge' -count=1 -v ./common-pkg/headInfo -timeout=60s
+go build -mod=readonly -buildvcs=false ./common-pkg/...
+go test -mod=readonly -buildvcs=false ./common-pkg/... -run '^$' -count=1
+go build -mod=readonly -buildvcs=false -o /private/tmp/new-platform-metadata-merge.BIcDXLg3/example_1 /private/tmp/new-platform-metadata-merge.BIcDXLg3/example_1.go
+go build -mod=readonly -buildvcs=false -o /private/tmp/new-platform-metadata-merge.BIcDXLg3/example_2 /private/tmp/new-platform-metadata-merge.BIcDXLg3/example_2.go
+go build -mod=readonly -buildvcs=false -o /private/tmp/new-platform-metadata-merge.BIcDXLg3/example_3.a /private/tmp/new-platform-metadata-merge.BIcDXLg3/example_3.go
+/private/tmp/new-platform-metadata-merge.BIcDXLg3/example_1
+/private/tmp/new-platform-metadata-merge.BIcDXLg3/example_2
+gofmt -l common-pkg/headInfo/head.go
+git -C common-pkg diff --check
+git diff --check
+```
+
+- **限制** HTTP为内存请求，真实grpc通过进程内bufconn，未做TCP/TLS/网关或部署认证联调；自定义metadata仍受gRPC既有键值/大小限制，合并不证明字段真实可信，不应承载仅进程内使用的敏感值。原有外部设施集成测试只编译未运行，本机Go1.26.5，未另装Go1.22；其他业务模块未修改或测试。API/RPC目录仅更新接入记录。
+- **测试清理** 已在清理前登记实际命令、结果与限制；随后删除两个overlay测试源及配置、原始/工作区摘要快照、首轮/最终测试与构建/编译输出、三份抽取范例源码及编译产物、两份运行输出、全部本轮临时脚本产物和独立构建缓存。核对任务目录及两个仓库虚拟测试目标均不存在，原有五个测试及摘要不变；未新增持久文件。范围外原有源码、JWT参数、已有依赖及工作区配置保持；API/RPC目录仅更新记录，其他业务项目文件和测试未改动。

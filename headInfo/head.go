@@ -120,8 +120,10 @@ func GetFullHead(r *http.Request) map[string][]string {
 }
 
 // HeadInMetadata 写入 RPC 业务头和 W3C 链路，仅使用上下文中的统一 Trace ID。
+// 复制已有出站 metadata 后覆盖 Head 对应的平台字段，包括空值，保留其他自定义字段及多值。
+// 不合并入站 metadata、不修改父上下文；清除原出站 W3C 字段，再按活动上下文重新注入。
 func HeadInMetadata(ctx context.Context, h Head) context.Context {
-	md := metadata.Pairs(
+	platformFields := metadata.Pairs(
 		consts.HeaderToken, h.AuthorizationJwt,
 		consts.TokenUid, h.TokenUid,
 		consts.ClientIp, h.ClientIp,
@@ -139,6 +141,15 @@ func HeadInMetadata(ctx context.Context, h Head) context.Context {
 		consts.DeviceId, h.DeviceId,
 	)
 
+	md, _ := metadata.FromOutgoingContext(ctx)
+	md = md.Copy()
+	for key, values := range platformFields {
+		// 使用 Set 覆盖为单值，不能追加，否则旧身份/重复平台字段可能留在新请求中。
+		md.Set(key, values...)
+	}
+	// 原实现重建 metadata 时不会沿用旧链路；合并后仍只信任当前活动 Trace。
+	md.Delete("traceparent")
+	md.Delete("tracestate")
 	ctxNew := metadata.NewOutgoingContext(ctx, md)
 	if GetTrace(ctx) != "" {
 		return traceMetadata(ctxNew)
