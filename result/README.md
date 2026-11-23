@@ -23,6 +23,28 @@
 
 翻译来源为项目本地 `etc/language/*.json`，启动时必须显式加载；未加载或未命中时保留原值。错误 message 直接按原文或业务 key 查找，data 的字符串值自动匹配，无 `messageKeys` 映射。接入方式见 [本地词典说明](../language/README.md)。
 
+## 错误处理器接入
+
+标准启动调用 `app.InitAppServer()` 已通过 `httpx.SetErrorHandlerCtx` 注册 `logs/xcode.ErrHandlerCtx`。只需单独注册 HTTP 错误处理器时，在启动阶段调用下列配置，不必重复初始化日志：
+
+```go
+package api
+
+import (
+    errorhandler "github.com/K7mQ2vR9/base-pkg/logs/xcode"
+    "github.com/zeromicro/go-zero/rest/httpx"
+)
+
+// InitHTTPErrorHandler 在接收请求前注册进程共用的错误处理器。
+func InitHTTPErrorHandler() {
+    httpx.SetErrorHandlerCtx(errorhandler.ErrHandlerCtx)
+}
+```
+
+业务错误出口使用 `httpx.ErrorCtx(r.Context(), w, err)`，也可直接调用 `result.HttpErrorResult(r.Context(), w, err)`，始终传递当前请求上下文。`ErrHandlerCtx` 仅构建状态和响应对象，由框架写入；它使用上下文中的统一Trace ID和语言，不生成新ID，也不从原始请求头补取数据。链路和语言仍由标准请求入口提前注入，项目词典仍须显式加载。
+
+原无上下文的 `logs/xcode.ErrHandler` 已删除，不提供兼容包装。原 `httpx.SetErrorHandler(errorhandler.ErrHandler)` 调用须迁移为 `httpx.SetErrorHandlerCtx(errorhandler.ErrHandlerCtx)`；不要使用 `context.Background()` 或 `context.TODO()` 替换请求上下文。标准 `app.InitAppServer()` 的注册方式保持，错误的HTTP状态、业务码、公开文案和响应结构沿用现有规则。
+
 ## 编码失败
 
 输出前先完整编码，再设置 JSON Content-Type、提交状态码和写入正文。NaN/Inf、循环引用、不可编码类型、无效 RawMessage、自定义 MarshalJSON 返回错误或无效 JSON，都会在提交成功响应之前被发现。

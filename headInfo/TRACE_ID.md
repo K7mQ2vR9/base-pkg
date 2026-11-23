@@ -56,6 +56,8 @@ HTTP 入口先读取并校验请求中的 ID，再初始化链路，不先生成
 
 HTTP 校验失败时可为错误响应建立新的诊断 ID，非法输入不会被当作合法业务 ID 转发。HTTP 随机源失败返回 `500`。网关应在创建自己的服务端 Span 之前执行相同校验和初始化，向下游同时转发 `X-Request-ID` 和标准 `traceparent`。实际网关类型与配置尚未接入本仓库。
 
+HTTP 业务及框架错误出口也必须沿用当前请求ctx：启动使用 `app.InitAppServer()` 或 `httpx.SetErrorHandlerCtx(errorhandler.ErrHandlerCtx)` 注册，输出调用 `httpx.ErrorCtx(r.Context(), w, err)`。无上下文的 `logs/xcode.ErrHandler` 已删除；响应阶段不另建后台上下文或生成替代Trace ID。完整接入和语言规则见 [错误处理器说明](../result/README.md#错误处理器接入)。
+
 `ExtractTrace` 只恢复和校验 W3C 链路，`ExtractRequestTrace` 额外识别 HTTP 请求 ID，两者均不生成 Trace ID。只有请求 ID 且无活动 Span 时，会随机生成非零8字节 Span ID 补齐传播上下文，这不改变请求 ID。`EnsureTrace` 在没有现有链路时负责生成 Trace ID；格式错误或冲突直接返回错误，不走缺失兜底。`SetTrace` 同样拒绝覆盖不同活动链路。HTTP 冲突返回400，RPC 返回 `InvalidArgument`，RabbitMQ 沿用现有冲突拒绝与失败处理。
 
 `traceparent` 的格式为 `版本-TraceID-上游SpanID-标志`，例如 `00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01`。不同调用可创建不同 Span，因此完整字段可以变化，同一链路的 Trace ID 保持相同。前端仅发送 `X-Request-ID` 即可；上游链路组件可能仅发送标准 `traceparent`，API会恢复其中的 ID。RPC内部只传标准链路字段，不要求额外发送 `X-Request-ID`。

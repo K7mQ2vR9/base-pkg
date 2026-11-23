@@ -8,11 +8,8 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func ErrHandler(err error) (int, any) {
-	return ErrHandlerCtx(context.Background(), err)
-}
-
-// ErrHandlerCtx 使用请求上下文中的 trace，为 httpx.ErrorCtx 构建错误响应。
+// ErrHandlerCtx 为 httpx.SetErrorHandlerCtx 构建统一错误响应，不直接写入正文。
+// ctx 须为当前请求上下文，沿用其中的 Trace ID 和语言；不在响应阶段生成 ID 或补建后台上下文。
 func ErrHandlerCtx(ctx context.Context, err error) (int, any) {
 	return result.HttpErrorResponse(ctx, err)
 }

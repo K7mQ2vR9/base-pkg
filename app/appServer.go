@@ -23,6 +23,8 @@ func logInit() {
 	logx.SetWriter(writer)
 }
 
+// InitAppServer 在启动阶段初始化进程日志，并注册使用请求上下文的 HTTP 错误处理器。
+// 使用框架错误出口时须通过 httpx.ErrorCtx 传入当前请求 ctx，以沿用统一 Trace ID 和语言设置。
 func InitAppServer() {
 	logInit()
 	logx.DisableStat()
