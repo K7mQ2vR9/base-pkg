@@ -32,8 +32,6 @@
 package service
 
 import (
-    "errors"
-
     "github.com/K7mQ2vR9/base-pkg/app"
     "github.com/K7mQ2vR9/base-pkg/appMiddleware"
     "github.com/zeromicro/go-zero/rest"
@@ -44,17 +42,17 @@ import (
 func ConfigureAPI(server *rest.Server,
     verify appMiddleware.CheckRequestTokenFuncWithUserInfo,
     serviceAvailable appMiddleware.CheckServiceStatusFunc) error {
-    if serviceAvailable == nil {
-        return errors.New("service status checker is required")
-    }
     white := map[string]int{
         "/public": 1,
         "/open/*": 1,
     }
-    // 先创建独立状态组件，再装配API链路；确认的非空回调满足此组件的构造要求。
-    serviceStatus := appMiddleware.NewCheckServiceStatusMiddleware(white,
+    // 先校验并创建独立状态组件，成功后再装配API链路，失败不追加中间件。
+    serviceStatus, err := appMiddleware.NewCheckServiceStatusMiddleware(white,
         appMiddleware.WithCheckServiceStatusCheckOption(serviceAvailable),
     )
+    if err != nil {
+        return err
+    }
     if err := app.NewServerMiddleware(server,
         app.WithWhiteHeaderPathSMOption(white),
         app.WithCheckTokenHandleWithUserInfoSMOption(verify),
@@ -69,7 +67,9 @@ func ConfigureAPI(server *rest.Server,
 
 启动代码必须检查 `ConfigureAPI` / `ApiUseMiddleware` 返回的错误，失败时记录原因、清理已创建的资源并停止启动。`ApiUseMiddleware` 在全部配置校验和组件创建成功后才追加中间件，缺少认证回调等配置错误不再直接panic，不会留下本次部分装配。
 
-独立使用 `NewUserAgentMiddleware` 或 `NewUserAuthMiddlewareWithErr` 时，构造函数均返回 `(组件指针, error)`；缺少回调或传入nil选项返回nil组件和错误，不保留旧单返回值入口。先检查错误，再通过 `server.Use(auth.Handle)` 接入；认证回调签名、运行时错误响应和白名单规则保持。独立服务状态组件仍使用原构造接口，示例在调用之前明确检查其必需回调。
+独立使用 `NewUserAgentMiddleware`、`NewUserAuthMiddlewareWithErr` 或 `NewCheckServiceStatusMiddleware` 时，构造函数均返回 `(组件指针, error)`；缺少回调或传入nil选项返回nil组件和错误，不保留旧单返回值入口。先检查错误，再通过 `server.Use(component.Handle)` 接入；回调签名、运行时错误响应和白名单规则保持。
+
+服务状态组件应先构造成功，再装配API链路，并在认证之后追加其 `Handle`。构造函数统一校验缺失回调及nil选项，业务无需重复预检查回调；初始化失败由启动代码记录错误、清理已有资源并停止启动。所有请求（含白名单及匿名请求）仍执行服务状态检查，返回false时沿用原服务不可用响应，不新增白名单豁免或状态码。
 
 server 使用 `app.NewServerWithCORS` 创建，保留 Trace 和单值业务头校验。服务状态中间件仍需显式接入，`ApiUseMiddleware` 不会自动配置业务状态回调。`CheckServiceStatusRequest` 与构造函数继续接收原白名单参数，但不会据此跳过状态检查，缺少回调或返回 false 均拒绝。
 
