@@ -2,6 +2,23 @@
 
 `GenerateToken` 改为接收一个 `GenerateTokenParams` 值，返回类型仍为 `(string, error)`，直接替换旧的多个位置参数。`ParseToken` 调用方式不变。签发使用 HS256，密钥至少32字节且不能全为空白，有效时长由调用方显式提供，Claims 的 JSON 字段及当前签发内容保持不变。
 
+底层依赖为 `github.com/golang-jwt/jwt/v5 v5.3.1`，已移除本模块对 `github.com/dgrijalva/jwt-go` 的直接依赖。选定版本的go.mod要求Go1.21，项目Go1.22声明保持。版本与迁移背景见 [v5.3.1发布记录](https://github.com/golang-jwt/jwt/releases/tag/v5.3.1) 和 [官方迁移说明](https://github.com/golang-jwt/jwt/blob/v5.3.1/MIGRATION_GUIDE.md)。
+
+## Claims 与底层接口
+
+本包的 `Claims` 直接实现v5的 `jwt.Claims` 接口，不再嵌入底层 `StandardClaims`，也不提供旧类型或方法包装。业务字段 `uid/source/sign/Business_code/token_type` 及标准声明JSON标签保持。
+
+| 本包字段 | 类型及JSON形式 |
+|---|---|
+| ExpiresAt / IssuedAt / NotBefore | int64 Unix秒，对应exp/iat/nbf，零值不输出；不接受小数、字符串或溢出数字 |
+| Audience | 单个string，对应aud，保持字符串形式，不改为数组 |
+| Id | string，对应jti，保留既有Go字段名 |
+| Issuer / Subject | string，对应iss/sub，空值不输出 |
+
+原先构造 `Claims{StandardClaims: ...}` 的代码应改为直接填写本包字段，例如 `Claims{ExpiresAt: expires, Issuer: issuer}`；直接读取 `claims.ExpiresAt` 等字段仍使用原int64类型。`GetExpirationTime/GetIssuedAt/GetNotBefore/GetAudience/GetIssuer/GetSubject` 仅提供v5校验接口，不执行签名验证，业务应通过 `ParseToken` 获取已验证身份。
+
+未增加issuer/audience/subject匹配要求，也未改变业务UID或TokenType策略。旧 `Valid` / `VerifyExpiresAt` 等由StandardClaims提供的方法不再存在，不能沿用对旧库的类型断言。底层解析错误现使用v5错误链；需要分类时可用 `errors.Is(err, jwt.ErrTokenExpired)` 或 `errors.Is(err, jwt.ErrTokenRequiredClaimMissing)`，但任何解析错误都必须拒绝身份使用。
+
 ## 签发参数
 
 ```text
@@ -30,7 +47,7 @@ ExpireDuration 使用 Go 时长值，代替原先裸 int64 的纳秒参数。如
 | 等于当前秒 | 拒绝 |
 | 晚于当前秒，且其他校验通过 | 接受 |
 
-时间来源与底层解析器一致，沿用 `jwt.TimeFunc`，默认为服务端当前时间，不增加时钟宽限。签名验证完成后再次确认未到期，避免验证过程中越过到期边界仍返回 Claims。失败时返回 nil Claims 和错误，不把已解码但未通过验证的身份交给业务。
+时间来源为服务端 `time.Now`，通过 `jwt.WithTimeFunc(time.Now)` 配置在每次创建的解析器上，不再使用旧库的全局 `jwt.TimeFunc`，也不新增全局可变时钟。显式启用 `WithExpirationRequired` 与 `WithIssuedAt`：exp必填，未来iat拒绝，nbf沿用v5默认生效时间校验，iat/nbf为0或缺失时不新增必填要求。不增加时钟宽限。签名验证和声明校验完成后，再次检查exp为正数且严格晚于当前Unix秒，避免验证过程中越过到期边界仍返回Claims；此处到期错误保留v5的ErrTokenExpired错误链。失败时返回nil Claims，不把已解码但未通过验证的身份交给业务。
 
 刷新场景通过 `ParseToken` 校验现有令牌，业务身份及续签许可由调用方判断，不自动签发新令牌。
 

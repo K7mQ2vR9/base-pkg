@@ -17,15 +17,19 @@ var ErrClosed = errors.New("elasticsearch7 client is closed")
 
 // Es 持有独立 Elasticsearch 7 SDK 和连接池，可由多个请求共享，服务退出时调用 Close。
 // 直接使用嵌入 SDK 须自行提供请求 ctx、截止时间并关闭响应体；模型操作自动管理这些资源。
+// 成功响应按实例 MaxResponseBytes 限制实际读取量，默认 16 MiB，直接使用 SDK 同样须检查读取错误。
 type Es struct {
 	*es7.Client
 	transport      *http.Transport
 	requestTimeout time.Duration
+	// maxResponseBytes 为本实例成功响应正文的读取上限，单位为字节，构造时已应用默认值并校验。
+	maxResponseBytes int64
 	closed         atomic.Bool
 }
 
 // NewEs 校验配置后，在 ctx 和 StartupTimeout 中较早的截止时间前完成集群 Info 探活。
 // 初始化上下文取消不影响已创建客户端；初始化失败释放空闲连接，成功后由服务统一 Close。
+// Info 成功正文也受 MaxResponseBytes 约束，超限按启动失败处理并释放资源。
 func NewEs(ctx context.Context, conf *Config) (*Es, error) {
 	if ctx == nil {
 		return nil, errors.New("elasticsearch7 startup context is required")
@@ -53,7 +57,7 @@ func NewEs(ctx context.Context, conf *Config) (*Es, error) {
 		ResponseHeaderTimeout: c.Transport.ResponseHeaderTimeout,
 		DialContext:           (&net.Dialer{Timeout: c.Transport.DialTimeout, KeepAlive: 30 * time.Second}).DialContext,
 	}
-	result := &Es{transport: transport, requestTimeout: c.RequestTimeout}
+	result := &Es{transport: transport, requestTimeout: c.RequestTimeout, maxResponseBytes: c.MaxResponseBytes}
 	client, err := es7.NewClient(es7.Config{
 		Addresses: c.Addresses, Username: c.Username, Password: c.Password,
 		MaxRetries: retries, DisableRetry: retries == 0,
@@ -125,6 +129,10 @@ func (t *clientTransport) RoundTrip(request *http.Request) (*http.Response, erro
 		return nil, ErrClosed
 	}
 	response, err := t.base.RoundTrip(request)
+	if response != nil && response.Body != nil && response.StatusCode >= 200 && response.StatusCode < 300 {
+		// 在 SDK 读取探活或业务正文前绑定实例上限；错误响应由 ReadResponse 保持原 4 KiB 摘要规则。
+		response.Body = newLimitedResponseBody(response.Body, t.owner.maxResponseBytes)
+	}
 	// 当前 SDK 对直接 io.EOF 的重试不检查 DisableRetry；包装后保留错误链并阻止该特例重试。
 	if t.disableRetry && err == io.EOF {
 		return response, &operationError{"round trip", err}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/K7mQ2vR9/base-pkg/es/esaws"
@@ -23,6 +24,64 @@ var ErrInvalidResponse = errors.New("opensearch invalid response")
 // ErrIncompleteSearch 表示搜索超时、分片失败、提前终止或总数仅为下界，不能作为完整结果使用。
 // 使用 errors.Is 判断；独立于 Elasticsearch 7 的错误，不回显查询或分片错误，且在写入目标对象前返回。
 var ErrIncompleteSearch = errors.New("opensearch search result is incomplete")
+
+// defaultMaxResponseBytes 为未配置客户端或独立解析响应的默认成功正文上限，单位为字节，固定 16 MiB。
+const defaultMaxResponseBytes int64 = 16 << 20
+
+// ErrResponseTooLarge 表示成功响应正文超过读取上限，使用 errors.Is 判断；不包含原始正文或查询。
+// ReadResponse 返回此错误时不提供截断字节，模型解析不会因此修改业务目标。
+var ErrResponseTooLarge = errors.New("opensearch response body exceeds limit")
+
+// limitedResponseBody 按实例配置限制实际读取字节，不信任 Content-Length。
+// 单个读取者消费；Close 可并发或重复调用，超过上限只多读一个判定字节并立即关闭底层正文。
+type limitedResponseBody struct {
+	source    io.ReadCloser
+	remaining int64
+	exceeded  bool
+	closeOnce sync.Once
+	closeErr  error
+}
+
+// newLimitedResponseBody 绑定已校验的实例上限，0 使用独立解析器的默认值，不允许无限读取。
+func newLimitedResponseBody(source io.ReadCloser, maxBytes int64) *limitedResponseBody {
+	if maxBytes == 0 {
+		maxBytes = defaultMaxResponseBytes
+	}
+	return &limitedResponseBody{source: source, remaining: maxBytes}
+}
+
+func (body *limitedResponseBody) Read(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+	if body.exceeded {
+		return 0, ErrResponseTooLarge
+	}
+	if body.remaining == 0 {
+		// 上限内正文仍可能恰好结束；只用一个额外字节区分 EOF 与实际超限，不把它交给解析器。
+		var probe [1]byte
+		count, err := body.source.Read(probe[:])
+		if count > 0 {
+			body.exceeded = true
+			_ = body.Close()
+			return 0, ErrResponseTooLarge
+		}
+		return 0, err
+	}
+	if int64(len(data)) > body.remaining {
+		data = data[:body.remaining]
+	}
+	count, err := body.source.Read(data)
+	body.remaining -= int64(count)
+	return count, err
+}
+
+func (body *limitedResponseBody) Close() error {
+	body.closeOnce.Do(func() {
+		body.closeErr = body.source.Close()
+	})
+	return body.closeErr
+}
 
 // Aggregations 按聚合名称保存原始 JSON，保留嵌套桶、自定义字段与大整数精度，不依赖 Elasticsearch 类型。
 // 使用 json.Unmarshal(result[name], &target) 解码业务需要的某一项，空聚合返回空 map。
@@ -49,7 +108,8 @@ func (e *ResponseError) Unwrap() error {
 	return nil
 }
 
-// ReadResponse 接管并关闭有效响应体，成功返回完整正文，错误响应仅读取最多 4KiB 提取错误类型。
+// ReadResponse 接管并关闭有效响应体，成功正文受客户端 MaxResponseBytes 限制，独立响应默认 16 MiB。
+// 超限返回可用 errors.Is 判断的 ErrResponseTooLarge，不提供截断正文；错误响应仍最多读取 4 KiB。
 // 所有提前返回均关闭正文，不无限 drain；ctx 须与请求相同以中断网络读取。
 func ReadResponse(ctx context.Context, response *opensearchapi.Response) (body []byte, err error) {
 	if response == nil {
@@ -74,6 +134,10 @@ func ReadResponse(ctx context.Context, response *opensearchapi.Response) (body [
 	var reader io.Reader = response.Body
 	if response.StatusCode >= 300 {
 		reader = io.LimitReader(reader, 4096)
+	} else if _, bounded := response.Body.(*limitedResponseBody); !bounded {
+		// 非本客户端创建的响应也有默认保护；已有实例包装不再套默认值，允许显式调大上限。
+		response.Body = newLimitedResponseBody(response.Body, defaultMaxResponseBytes)
+		reader = response.Body
 	}
 	body, err = io.ReadAll(reader)
 	if ctx.Err() != nil {

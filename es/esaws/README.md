@@ -11,6 +11,7 @@ Username: "app"
 Password: "${OPENSEARCH_PASSWORD}"
 StartupTimeout: 5s
 RequestTimeout: 10s
+MaxResponseBytes: 16777216
 MaxRetries: 3
 TLS:
   CAFile: ""
@@ -31,12 +32,25 @@ Transport:
 |---|---|
 | `StartupTimeout` | 默认 5s，集群 Info 探活总时限，包含受控 Info 探活、重试及读取正文 |
 | `RequestTimeout` | 默认 10s，每次模型操作的独立 I/O 预算，包含所有 SDK 重试和读取正文 |
+| `MaxResponseBytes` | 成功响应正文读取上限，单位字节；0默认16MiB，负数及MaxInt64非法，不提供无限模式 |
 | `MaxRetries` | `*int`，nil 默认 3；指向 0 关闭 SDK 重试；表示首次请求之外的次数 |
 | `TLS.CAFile` | 默认空，使用系统信任证书；指定 PEM 文件时追加信任，无法读取或无有效证书则失败 |
 | `TLS.InsecureSkipVerify` | 默认 false，校验证书链及主机名，最低 TLS 1.2；仅测试环境按需开启跳过验证 |
 | `Transport` | 阶段时限及连接池默认值如上，`MaxIdleConnsPerHost` 不得超过 `MaxConnsPerHost` |
 
 时长和连接池字段为 0 时使用默认值，负值非法，不用 0 表示无限等待或无限连接。父请求截止时间更早时优先采用父级时间。连接池是服务级共享资源，不随每个请求重新建立。默认沿用 SDK 的网络错误及 502/503/504 重试触发条件，不额外开启网络超时重试；删除了旧的硬编码随机指数退避，因为当前 SDK 的等待使用不可取消的 time.Sleep；请求的总时间预算不会随重试重新计算。重试不能证明前一次写入没有发生，写操作仍须使用稳定 ID 并按业务语义处理冲突。
+
+## 成功响应大小上限
+
+`MaxResponseBytes` 控制单个成功HTTP响应的正文读取字节数，不包含响应头；标准HTTP传输自动解压时按解压后的字节计算。默认 `16777216`（16MiB），例如 `33554432` 为32MiB。配置在客户端构造时复制并固定，不随调用方之后修改Config而变化，两套客户端各自独立配置。
+
+上限绑定在成功响应体上，覆盖启动Info探活、模型查询/写入和通过该客户端SDK直接读取的成功正文。仅按实际字节计数，不依赖Content-Length；到达上限后最多再读一个判定字节，正好达到上限且已EOF仍成功。实际超限时关闭底层正文并返回本套 `core.ErrResponseTooLarge`，用 `errors.Is` 判断；不暴露额外判定字节，后续继续读取仍返回该错误。
+
+`ReadResponse` / `CheckResponse` / `ParseGetResponse` / `ParseSearchResponse` 遇到超限即返回错误，不解析截断字节；ReadResponse返回nil正文，模型目标不因超限而更新。模型Search返回总数0，OpenSearch同时返回nil聚合，不能忽略error后将其当作正常空结果。原4KiB错误响应摘要规则保持。
+
+独立构造SDK响应再调用上述解析函数时，默认使用16MiB上限；通过本客户端获得的响应沿用实例配置，不再叠加更小的默认上限。直接使用SDK时仍须处理每次Read/解码返回的错误并Close，不能将已读取前缀当作完整响应。
+
+超过默认上限的合法大文档、查询或聚合，需要在创建客户端时显式调大配置，或通过size、分页及字段筛选减少单次响应。此上限限制读取量，不是整个进程内存上限，也不能代替超时和并发控制；JSON解码和业务对象仍占额外内存。写操作响应超限不代表服务端写入未发生，重试仍须使用稳定ID并按业务语义处理。
 
 ## 完整接入范例
 
@@ -106,7 +120,9 @@ func main() {
         },
     })
     if err != nil {
-        if errors.Is(err, core.ErrIncompleteSearch) {
+        if errors.Is(err, core.ErrResponseTooLarge) {
+            log.Print("search response exceeds MaxResponseBytes")
+        } else if errors.Is(err, core.ErrIncompleteSearch) {
             log.Print("search result is incomplete; do not use hits or aggregations")
         } else {
             log.Printf("search records: %v", err)

@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"math"
 	"net/url"
 	"os"
 	"strings"
@@ -21,6 +22,9 @@ type Config struct {
 	StartupTimeout time.Duration `json:",optional"`
 	// RequestTimeout 为模型单次操作总时限，包含重试和读取正文；零值默认 10s，负值非法。
 	RequestTimeout time.Duration `json:",optional"`
+	// MaxResponseBytes 为成功响应正文的最大读取字节数，不含响应头，自动解压时按解压后计数。
+	// 0 默认 16 MiB（16777216）；负数或 MaxInt64 非法，不提供无限制模式，超限返回 ErrResponseTooLarge。
+	MaxResponseBytes int64 `json:",optional"`
 	// MaxRetries 表示首次请求之外的 SDK 重试次数，未配置默认 3，显式 0 关闭重试，负值非法。
 	// 沿用 SDK 默认网络错误及 502/503/504 重试策略，写操作须考虑结果不确定和幂等。
 	MaxRetries *int `json:",optional"`
@@ -61,6 +65,12 @@ func normalizeConfig(conf *Config) (Config, int, error) {
 		return Config{}, 0, errors.New("elasticsearch7 Addresses are required")
 	}
 	c := *conf
+	if c.MaxResponseBytes < 0 || c.MaxResponseBytes == math.MaxInt64 {
+		return Config{}, 0, errors.New("elasticsearch7 MaxResponseBytes must be non-negative and below MaxInt64")
+	}
+	if c.MaxResponseBytes == 0 {
+		c.MaxResponseBytes = defaultMaxResponseBytes
+	}
 	c.Addresses = append([]string(nil), conf.Addresses...)
 	for _, address := range c.Addresses {
 		u, err := url.Parse(address)
