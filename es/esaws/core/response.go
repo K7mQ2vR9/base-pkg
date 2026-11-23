@@ -20,6 +20,10 @@ var ErrNotFound = errors.New("opensearch document or index not found")
 // ErrInvalidResponse 表示缺失响应、正文或必要字段，不能将异常响应当作成功或零条数据。
 var ErrInvalidResponse = errors.New("opensearch invalid response")
 
+// ErrIncompleteSearch 表示搜索超时、分片失败、提前终止或总数仅为下界，不能作为完整结果使用。
+// 使用 errors.Is 判断；独立于 Elasticsearch 7 的错误，不回显查询或分片错误，且在写入目标对象前返回。
+var ErrIncompleteSearch = errors.New("opensearch search result is incomplete")
+
 // Aggregations 按聚合名称保存原始 JSON，保留嵌套桶、自定义字段与大整数精度，不依赖 Elasticsearch 类型。
 // 使用 json.Unmarshal(result[name], &target) 解码业务需要的某一项，空聚合返回空 map。
 type Aggregations map[string]json.RawMessage
@@ -153,7 +157,9 @@ func ParseGetResponse(ctx context.Context, target any, response *opensearchapi.R
 }
 
 // ParseSearchResponse 关闭响应体并将 _source 数组解码到目标切片，保留 int64 精度，空命中返回空数组。
-// 支持 OpenSearch 对象或数字形式的 total，缺少必要字段或非法总数返回 ErrInvalidResponse。
+// 必须提供 timed_out 和 _shards.failed；超时、失败分片或 terminated_early=true 返回 ErrIncompleteSearch。
+// total 支持数字或 relation=eq 的对象；gte 返回 ErrIncompleteSearch，缺失/未知关系或非法字段返回 ErrInvalidResponse。
+// 完整性检查先于目标解码，检查失败不修改 target，聚合返回 nil；文档类型错误仍按原 JSON 规则返回。
 // 聚合按原始 JSON 返回，不存在时返回空 map，调用方自行按聚合名称解码业务结构。
 func ParseSearchResponse(ctx context.Context, target any, response *opensearchapi.Response) (int64, Aggregations, error) {
 	body, err := ReadResponse(ctx, response)
@@ -161,6 +167,11 @@ func ParseSearchResponse(ctx context.Context, target any, response *opensearchap
 		return 0, nil, err
 	}
 	var result struct {
+		TimedOut        *bool `json:"timed_out"`
+		TerminatedEarly *bool `json:"terminated_early"`
+		Shards          *struct {
+			Failed *int64 `json:"failed"`
+		} `json:"_shards"`
 		Aggregations Aggregations `json:"aggregations"`
 		Hits         *struct {
 			Total json.RawMessage `json:"total"`
@@ -172,18 +183,34 @@ func ParseSearchResponse(ctx context.Context, target any, response *opensearchap
 	if err := json.Unmarshal(body, &result); err != nil {
 		return 0, nil, &operationError{"decode search response", err}
 	}
+	// 不将缺失或 null 的完整性字段按零值处理，避免将被过滤的结果或聚合当作完整数据。
+	if result.TimedOut == nil || result.Shards == nil || result.Shards.Failed == nil || *result.Shards.Failed < 0 {
+		return 0, nil, ErrInvalidResponse
+	}
+	if *result.TimedOut || *result.Shards.Failed > 0 || (result.TerminatedEarly != nil && *result.TerminatedEarly) {
+		return 0, nil, ErrIncompleteSearch
+	}
 	if result.Hits == nil || result.Hits.Hits == nil {
 		return 0, nil, ErrInvalidResponse
 	}
 	var total int64
 	if raw := bytes.TrimSpace(result.Hits.Total); len(raw) > 0 && raw[0] == '{' {
 		var object struct {
-			Value *int64 `json:"value"`
+			Value    *int64 `json:"value"`
+			Relation string `json:"relation"`
 		}
 		if err := json.Unmarshal(raw, &object); err != nil {
 			return 0, nil, &operationError{"decode search total", err}
 		}
-		if object.Value == nil {
+		if object.Value == nil || *object.Value < 0 {
+			return 0, nil, ErrInvalidResponse
+		}
+		// gte 仅表示总数下界，不能作为准确总数或完整聚合结果向业务返回。
+		switch object.Relation {
+		case "eq":
+		case "gte":
+			return 0, nil, ErrIncompleteSearch
+		default:
 			return 0, nil, ErrInvalidResponse
 		}
 		total = *object.Value

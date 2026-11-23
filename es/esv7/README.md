@@ -102,7 +102,11 @@ func main() {
         "query": map[string]any{"match_all": map[string]any{}},
     })
     if err != nil {
-        log.Printf("search records: %v", err)
+        if errors.Is(err, core.ErrIncompleteSearch) {
+            log.Print("search result is incomplete; do not use these results")
+        } else {
+            log.Printf("search records: %v", err)
+        }
         return
     }
     log.Printf("total=%d returned=%d", total, len(result))
@@ -125,6 +129,26 @@ func main() {
 所有操作沿用模型的 `Ctx`，不使用 `context.Background()` 替代业务上下文；每次操作派生新的 RequestTimeout，父级取消/截止时间更早时优先。JSON 编解码是同步计算，不会被强制中断。模型实例不跨请求复用或并发修改 Ctx。
 
 `Search` 设置 `track_total_hits=true` 获取准确总数，大数据量查询会增加统计成本；通过 `size` 和分页控制单次读取量。解析使用 JSON 原始片段直接解码到业务类型，避免先转换 float64 导致大 int64 丢失精度。旧的已关闭原始响应返回值已经删除。
+
+### 搜索结果完整性
+
+模型搜索固定发送 `allow_partial_search_results=false`，不增加允许部分结果的配置开关。服务端返回非2xx时，继续使用原HTTP错误处理；即使HTTP成功，解析器仍在写入目标对象前检查完整性：
+
+| 字段或情况 | 处理 |
+|---|---|
+| `timed_out=true` | 返回本套 `core.ErrIncompleteSearch` |
+| `_shards.failed>0` | 返回 `core.ErrIncompleteSearch` |
+| `terminated_early=true` | 返回 `core.ErrIncompleteSearch` |
+| `hits.total.relation="gte"` | 总数仅为下界，返回 `core.ErrIncompleteSearch` |
+| 总数对象 `relation="eq"` | 按准确总数继续解析 |
+| 数字形式的非负 `hits.total` | 保持原支持，不要求对象形式的relation |
+| 缺失/null的 `timed_out`、`_shards` 或 `failed`，负数failed/total，缺失或未知relation | 返回 `core.ErrInvalidResponse` |
+
+使用 `errors.Is(err, core.ErrIncompleteSearch)` 区分不完整结果与正常空结果。上述完整性或总数检查失败返回总数0、不修改目标对象，不把部分命中当成成功结果。文档内容的JSON类型解码错误仍遵循原解码行为，不承诺对任意自定义解码器进行回滚。响应体继续统一关闭，不增加业务层自动重试。
+
+直接调用SDK或使用 `filter_path` 后再交给 `ParseSearchResponse` 时，必须保留 `timed_out`、`_shards.failed` 和完整的hits字段；对象形式total必须包含value及relation。正常空命中仍返回准确总数0和非nil空切片。此前接受部分结果或省略上述必要字段的响应现在返回错误，公开函数签名保持。
+
+协议依据见 [Elasticsearch 7 Search API](https://www.elastic.co/guide/en/elasticsearch/reference/7.17/search-search.html)。本套错误与OpenSearch保持独立。
 
 空 create ID 使用 `commonTool.NewUUidV7()` 生成 36 字符 UUIDv7；生成失败保留错误链并直接返回，不发送写入请求。业务已指定 ID 时原样使用。自动生成的 create ID 不写回调用方对象，同一次 SDK 请求重试复用该 ID，再次调用 `InsertSchema` 会重新生成；需要稳定重发标识时业务提前设置 ID。生成值不是业务自增序号，同一毫秒内不保证递增。
 

@@ -20,6 +20,10 @@ var ErrNotFound = errors.New("elasticsearch7 document or index not found")
 // ErrInvalidResponse 表示缺失响应、正文或必要字段，不能将异常响应当作成功或零条数据。
 var ErrInvalidResponse = errors.New("elasticsearch7 invalid response")
 
+// ErrIncompleteSearch 表示搜索超时、分片失败、提前终止或总数仅为下界，不能作为完整结果使用。
+// 使用 errors.Is 判断；此错误不会回显原始查询或分片错误，且在写入目标对象前返回。
+var ErrIncompleteSearch = errors.New("elasticsearch7 search result is incomplete")
+
 // ResponseError 保留 HTTP 状态和最多 128 字节的结构化错误类型，不暴露原始正文或 error.reason。
 type ResponseError struct {
 	// StatusCode 为服务端 HTTP 状态码，404 可通过 errors.Is 匹配 ErrNotFound。
@@ -149,13 +153,20 @@ func ParseGetResponse(ctx context.Context, target any, response *esapi.Response)
 }
 
 // ParseSearchResponse 关闭响应体并将 _source 数组解码到目标切片，保留 int64 精度，空命中返回空数组。
-// 支持 ES7 对象或数字形式的 total，缺少必要字段或非法总数返回 ErrInvalidResponse。
+// 必须提供 timed_out 和 _shards.failed；超时、失败分片或 terminated_early=true 返回 ErrIncompleteSearch。
+// total 支持数字或 relation=eq 的对象；gte 返回 ErrIncompleteSearch，缺失/未知关系或非法字段返回 ErrInvalidResponse。
+// 完整性检查先于目标解码，检查失败不修改 target；文档解码本身的类型错误仍按原 JSON 规则返回。
 func ParseSearchResponse(ctx context.Context, target any, response *esapi.Response) (int64, error) {
 	body, err := ReadResponse(ctx, response)
 	if err != nil {
 		return 0, err
 	}
 	var result struct {
+		TimedOut        *bool `json:"timed_out"`
+		TerminatedEarly *bool `json:"terminated_early"`
+		Shards          *struct {
+			Failed *int64 `json:"failed"`
+		} `json:"_shards"`
 		Hits *struct {
 			Total json.RawMessage `json:"total"`
 			Hits  []struct {
@@ -166,18 +177,34 @@ func ParseSearchResponse(ctx context.Context, target any, response *esapi.Respon
 	if err := json.Unmarshal(body, &result); err != nil {
 		return 0, &operationError{"decode search response", err}
 	}
+	// 不将缺失或 null 的完整性字段按零值处理，避免把删减过的响应误判为完整结果。
+	if result.TimedOut == nil || result.Shards == nil || result.Shards.Failed == nil || *result.Shards.Failed < 0 {
+		return 0, ErrInvalidResponse
+	}
+	if *result.TimedOut || *result.Shards.Failed > 0 || (result.TerminatedEarly != nil && *result.TerminatedEarly) {
+		return 0, ErrIncompleteSearch
+	}
 	if result.Hits == nil || result.Hits.Hits == nil {
 		return 0, ErrInvalidResponse
 	}
 	var total int64
 	if raw := bytes.TrimSpace(result.Hits.Total); len(raw) > 0 && raw[0] == '{' {
 		var object struct {
-			Value *int64 `json:"value"`
+			Value    *int64 `json:"value"`
+			Relation string `json:"relation"`
 		}
 		if err := json.Unmarshal(raw, &object); err != nil {
 			return 0, &operationError{"decode search total", err}
 		}
-		if object.Value == nil {
+		if object.Value == nil || *object.Value < 0 {
+			return 0, ErrInvalidResponse
+		}
+		// gte 仅表示总数下界，不满足本接口返回准确总数的约定。
+		switch object.Relation {
+		case "eq":
+		case "gte":
+			return 0, ErrIncompleteSearch
+		default:
 			return 0, ErrInvalidResponse
 		}
 		total = *object.Value
