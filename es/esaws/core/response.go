@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"sync"
 	"unicode/utf8"
 
@@ -221,9 +222,12 @@ func ParseGetResponse(ctx context.Context, target any, response *opensearchapi.R
 }
 
 // ParseSearchResponse 关闭响应体并将 _source 数组解码到目标切片，保留 int64 精度，空命中返回空数组。
+// target 必须为非 nil 切片指针；支持 []T 和 []*T，实现 Schema 的元素按命中顺序回填原生 _id。
+// 需回填 ID 的命中缺少非空 _id 时返回 ErrInvalidResponse；普通非 Schema 元素仍仅解码 _source。
 // 必须提供 timed_out 和 _shards.failed；超时、失败分片或 terminated_early=true 返回 ErrIncompleteSearch。
 // total 支持数字或 relation=eq 的对象；gte 返回 ErrIncompleteSearch，缺失/未知关系或非法字段返回 ErrInvalidResponse。
-// 完整性检查先于目标解码，检查失败不修改 target，聚合返回 nil；文档类型错误仍按原 JSON 规则返回。
+// 完整性检查先于目标解码；临时切片解码及 ID 回填成功后才替换 target，失败时聚合返回 nil。
+// 自定义解码器或 SetId 的外部副作用不回滚。
 // 聚合按原始 JSON 返回，不存在时返回空 map，调用方自行按聚合名称解码业务结构。
 func ParseSearchResponse(ctx context.Context, target any, response *opensearchapi.Response) (int64, Aggregations, error) {
 	body, err := ReadResponse(ctx, response)
@@ -240,6 +244,7 @@ func ParseSearchResponse(ctx context.Context, target any, response *opensearchap
 		Hits         *struct {
 			Total json.RawMessage `json:"total"`
 			Hits  []struct {
+				ID     string          `json:"_id"`
 				Source json.RawMessage `json:"_source"`
 			} `json:"hits"`
 		} `json:"hits"`
@@ -285,24 +290,69 @@ func ParseSearchResponse(ctx context.Context, target any, response *opensearchap
 		return 0, nil, ErrInvalidResponse
 	}
 	sources := make([]json.RawMessage, 0, len(result.Hits.Hits))
+	ids := make([]string, 0, len(result.Hits.Hits))
 	for _, hit := range result.Hits.Hits {
 		if len(hit.Source) == 0 || bytes.Equal(bytes.TrimSpace(hit.Source), []byte("null")) {
 			return 0, nil, ErrInvalidResponse
 		}
 		sources = append(sources, hit.Source)
+		ids = append(ids, hit.ID)
 	}
 	data, err := json.Marshal(sources)
 	if err != nil {
 		return 0, nil, &operationError{"encode search documents", err}
 	}
-	if err := json.Unmarshal(data, target); err != nil {
-		return 0, nil, &operationError{"decode search documents", err}
-	}
-	if err := ctx.Err(); err != nil {
+	if err := decodeSearchDocuments(ctx, target, data, ids); err != nil {
 		return 0, nil, err
 	}
 	if result.Aggregations == nil {
 		result.Aggregations = make(Aggregations)
 	}
 	return total, result.Aggregations, nil
+}
+
+// decodeSearchDocuments 先解码到新的同类型切片，再按命中顺序设置文档 ID，最后替换目标切片。
+// 普通解码失败、ID 缺失或提交前上下文已取消时不替换目标；自定义解码器/SetId 的外部副作用不回滚。
+func decodeSearchDocuments(ctx context.Context, target any, data []byte, ids []string) error {
+	value := reflect.ValueOf(target)
+	if !value.IsValid() || value.Kind() != reflect.Pointer || value.IsNil() || value.Elem().Kind() != reflect.Slice {
+		return &operationError{"decode search documents", fmt.Errorf("search target must be a non-nil pointer to a slice")}
+	}
+	decoded := reflect.New(value.Elem().Type())
+	if err := json.Unmarshal(data, decoded.Interface()); err != nil {
+		return &operationError{"decode search documents", err}
+	}
+	documents := decoded.Elem()
+	// 自定义切片解码器不能改变命中数量，否则无法按位置可靠对应原生 ID。
+	if documents.Len() != len(ids) {
+		return ErrInvalidResponse
+	}
+	for index := 0; index < documents.Len(); index++ {
+		document := documents.Index(index)
+		// []T 使用元素地址调用指针接收者；[]*T 直接使用元素，兼容嵌入 EsSchema 的模型。
+		schema, ok := document.Addr().Interface().(esaws.Schema)
+		if !ok {
+			schema, ok = document.Interface().(esaws.Schema)
+		}
+		if !ok {
+			continue
+		}
+		if ids[index] == "" {
+			return ErrInvalidResponse
+		}
+		if receiver := reflect.ValueOf(schema); receiver.Kind() == reflect.Pointer && receiver.IsNil() {
+			return ErrInvalidResponse
+		}
+		// 原生 _id 优先于 _source 内映射到同一字段的业务值。
+		schema.SetId(ids[index])
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if documents.IsNil() {
+		// 正常空命中始终交付非 nil 空切片，包括自定义解码器返回 nil 的情况。
+		documents.Set(reflect.MakeSlice(documents.Type(), 0, 0))
+	}
+	value.Elem().Set(documents)
+	return nil
 }

@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/K7mQ2vR9/base-pkg/aesGCM"
 	"github.com/K7mQ2vR9/base-pkg/appMiddleware"
@@ -21,12 +22,6 @@ func WithWhiteHeaderPathSMOption(whiteHeader map[string]int) SMOption {
 func WithDebugOption() SMOption {
 	return func(s *ServerMiddleware) {
 		s.isDebug = true
-	}
-}
-
-func WithTestOption() SMOption {
-	return func(s *ServerMiddleware) {
-		s.isTest = true
 	}
 }
 
@@ -97,7 +92,12 @@ func WithTrustedProxyCIDRs(cidrs []string) (SMOption, error) {
 	}, nil
 }
 
+// ServerMiddleware 保存单个装配实例的配置与状态；开始使用后不得复制或并发修改配置。
+// 同一个 Server 应复用此实例完成一次启动装配，不跨实例检查重复装配。
 type ServerMiddleware struct {
+	// applyMu 串行化同一实例的装配调用，applied 仅在全部中间件追加成功后置为 true。
+	applyMu sync.Mutex
+	applied bool
 	// initErr 保存装配选项错误，统一由 ApiUseMiddleware 返回；选项执行前不会追加中间件。
 	initErr            error
 	whiteHeader        map[string]int
@@ -110,7 +110,6 @@ type ServerMiddleware struct {
 	Server            *rest.Server
 
 	isDebug bool
-	isTest  bool
 	// aesConfig 在 API 装配时应用为进程共用的加解密配置。
 	aesConfig aesGCM.Config
 }
@@ -139,8 +138,17 @@ func NewServerMiddleware(s *rest.Server, opt ...SMOption) *ServerMiddleware {
 // 标准入口的 CORS 策略覆盖正常及早期错误；此处默认 CORS 组件沿用已绑定的实例配置。
 // 仅在启动阶段调用一次；先完成全部配置校验和组件创建，再应用进程级 AES 配置并统一追加。
 // nil Server/选项、缺少认证回调及正文/AES 配置错误均返回 error，失败不追加任何本次中间件。
+// 同一实例成功后再次调用返回错误，不追加中间件或再次应用 AES 配置；初始化失败不标记成功。
 func (s *ServerMiddleware) ApiUseMiddleware() error {
-	if s == nil || s.Server == nil {
+	if s == nil {
+		return fmt.Errorf("API server is required")
+	}
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+	if s.applied {
+		return fmt.Errorf("API middleware has already been applied")
+	}
+	if s.Server == nil {
 		return fmt.Errorf("API server is required")
 	}
 	if s.initErr != nil {
@@ -171,6 +179,7 @@ func (s *ServerMiddleware) ApiUseMiddleware() error {
 	for _, middleware := range middlewares {
 		s.Server.Use(middleware)
 	}
+	s.applied = true
 	return nil
 }
 

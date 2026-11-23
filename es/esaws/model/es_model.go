@@ -217,6 +217,7 @@ func (m *EsModel) UpdateSchema(data any) error {
 }
 
 // Search 将命中正文解码到 target 切片指针，返回准确总数、原始 JSON 聚合结果和错误，不暴露已关闭的原始响应。
+// 支持 []T 和 []*T；实现 esaws.Schema 的结果元素自动回填原生文档 ID，普通元素只解码正文。
 // indexTarget 提供 IndexName；固定 track_total_hits=true，空命中时目标为非 nil 空切片。
 // 固定 allow_partial_search_results=false；响应超时、分片失败、提前终止或总数不准确时返回错误。
 func (m *EsModel) Search(indexTarget any, target any, query map[string]any) (int64, core.Aggregations, error) {

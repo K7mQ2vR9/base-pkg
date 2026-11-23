@@ -115,7 +115,7 @@ func NewHTTPServer(c Config, check appMiddleware.CheckRequestTokenFunc) (*rest.S
 
 如果启用 AES，再将 `app.WithAESGCM(c.AESGCM)` 返回的选项传给同一个 `NewServerMiddleware`，并处理选项构造的错误；`WithRequestBody` 的配置会自动同步给其内部解密中间件。AES 仍按进程级配置开关工作，不通过上下文传递加密器。
 
-`ApiUseMiddleware()` 必须检查返回错误。nil Server/选项、缺少认证回调、正文上限或AES配置错误不再直接panic；先完成校验和组件创建，再追加CORS、并发、正文、解密、请求头和认证。失败不追加本次任何中间件；调用方负责记录原因、清理已有资源并停止启动。成功后仅装配一次，不在接收请求期间修改配置或重复装配。
+`ApiUseMiddleware()` 必须检查返回错误。nil Server/选项、缺少认证回调、正文上限或AES配置错误不再直接panic；先完成校验和组件创建，再追加CORS、并发、正文、解密、请求头和认证。初始化失败不追加本次任何中间件，也不标记为成功；调用方负责记录原因、清理已有资源并停止启动。同一装配实例成功后再次调用返回错误，不再次追加中间件或应用AES配置；不跨实例防重，同一Server仅保留一个装配对象，使用后不要复制。不在接收请求期间修改配置或重新装配。
 
 ## 独立 net/http 接入
 

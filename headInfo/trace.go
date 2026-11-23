@@ -149,6 +149,12 @@ func SetTrace(ctx context.Context, value string) (context.Context, error) {
 func traceMetadata(ctx context.Context) context.Context {
 	md, _ := metadata.FromOutgoingContext(ctx)
 	md = md.Copy()
+	return injectTraceMetadata(ctx, md)
+}
+
+// injectTraceMetadata 在调用方独占的 metadata 副本上注入当前 W3C 链路，不读取或复制原出站数据。
+// md 必须可写且不与父上下文或其他分支共享；本函数不生成 Trace ID。
+func injectTraceMetadata(ctx context.Context, md metadata.MD) context.Context {
 	// tracestate 以当前 Span 为准，避免缺少父级时沿用其他链路的状态。
 	md.Delete("tracestate")
 	ztrace.Inject(ctx, propagation.TraceContext{}, &md)

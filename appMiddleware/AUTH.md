@@ -67,6 +67,8 @@ func ConfigureAPI(server *rest.Server,
 
 启动代码必须检查 `ConfigureAPI` / `ApiUseMiddleware` 返回的错误，失败时记录原因、清理已创建的资源并停止启动。`ApiUseMiddleware` 在全部配置校验和组件创建成功后才追加中间件，缺少认证回调等配置错误不再直接panic，不会留下本次部分装配。
 
+同一个 `ServerMiddleware` 实例成功后再次装配会返回错误，避免认证、解密等组件重复执行；初始化失败不标记成功。该保护不跨实例，同一Server不要反复创建装配对象；对象使用后不得复制，也不要在运行期间修改选项。
+
 独立使用 `NewUserAgentMiddleware`、`NewUserAuthMiddlewareWithErr` 或 `NewCheckServiceStatusMiddleware` 时，构造函数均返回 `(组件指针, error)`；缺少回调或传入nil选项返回nil组件和错误，不保留旧单返回值入口。先检查错误，再通过 `server.Use(component.Handle)` 接入；回调签名、运行时错误响应和白名单规则保持。
 
 服务状态组件应先构造成功，再装配API链路，并在认证之后追加其 `Handle`。构造函数统一校验缺失回调及nil选项，业务无需重复预检查回调；初始化失败由启动代码记录错误、清理已有资源并停止启动。所有请求（含白名单及匿名请求）仍执行服务状态检查，返回false时沿用原服务不可用响应，不新增白名单豁免或状态码。

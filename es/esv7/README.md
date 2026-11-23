@@ -140,11 +140,23 @@ func main() {
 | `FindOne(id, target) error` | 解码到目标指针，并向实现 Schema 的目标设置文档 ID |
 | `UpdateSchema(data) error` | 使用 `{"doc": data}` 正文执行局部更新，要求非空 ID |
 | `Delete(id, target) error` | 按目标的 IndexName 删除指定文档 |
-| `Search(indexTarget, target, query) (int64, error)` | 结果写入目标切片指针，只返回总数和错误，空命中为空切片 |
+| `Search(indexTarget, target, query) (int64, error)` | 结果写入目标切片指针，实现 Schema 的元素回填原生 ID；只返回总数和错误，空命中为空切片 |
 
 所有操作沿用模型的 `Ctx`，不使用 `context.Background()` 替代业务上下文；每次操作派生新的 RequestTimeout，父级取消/截止时间更早时优先。JSON 编解码是同步计算，不会被强制中断。模型实例不跨请求复用或并发修改 Ctx。
 
 `Search` 设置 `track_total_hits=true` 获取准确总数，大数据量查询会增加统计成本；通过 `size` 和分页控制单次读取量。解析使用 JSON 原始片段直接解码到业务类型，避免先转换 float64 导致大 int64 丢失精度。旧的已关闭原始响应返回值已经删除。
+
+搜索目标必须为非nil切片指针，支持 `[]Record` 和 `[]*Record`。当元素或其地址实现本套 `esv7.Schema` 时，解码 `_source` 后自动调用 `SetId(hit._id)`；嵌入 `schema.EsSchema` 的类型同样适用。`GetId()` 得到搜索命中的原生文档ID，原生 `_id` 优先于 `_source` 中映射到同一字段的值。没有实现Schema的普通结构体、map等元素仍只解码正文，不自动添加业务JSON字段。
+
+上面的 `Record` 已实现Schema，成功搜索后可以直接读取ID，无需手动回填：
+
+```go
+for i := range result {
+    log.Printf("document ID=%s name=%s", result[i].GetId(), result[i].Name)
+}
+```
+
+需要回填ID的命中缺少非空 `_id` 时返回本套 `core.ErrInvalidResponse`，不会退回使用正文里的ID。解析先写入新的同类型切片，完成解码、ID回填并检查上下文后才替换目标；普通类型错误或ID错误不替换原切片。自定义切片解码器必须保留命中数量及顺序，否则无法正确对应ID；数量不符会返回ErrInvalidResponse，自定义解码器或SetId的外部副作用不回滚。公开Search签名和总数返回规则保持。
 
 ### 搜索结果完整性
 
@@ -160,11 +172,15 @@ func main() {
 | 数字形式的非负 `hits.total` | 保持原支持，不要求对象形式的relation |
 | 缺失/null的 `timed_out`、`_shards` 或 `failed`，负数failed/total，缺失或未知relation | 返回 `core.ErrInvalidResponse` |
 
-使用 `errors.Is(err, core.ErrIncompleteSearch)` 区分不完整结果与正常空结果。上述完整性或总数检查失败返回总数0、不修改目标对象，不把部分命中当成成功结果。文档内容的JSON类型解码错误仍遵循原解码行为，不承诺对任意自定义解码器进行回滚。响应体继续统一关闭，不增加业务层自动重试。
+使用 `errors.Is(err, core.ErrIncompleteSearch)` 区分不完整结果与正常空结果。上述完整性或总数检查失败返回总数0、不修改目标对象，不把部分命中当成成功结果。文档解码和ID回填在临时切片完成，普通错误不替换目标，不承诺回滚任意自定义方法的外部副作用。响应体继续统一关闭，不增加业务层自动重试。
 
 直接调用SDK或使用 `filter_path` 后再交给 `ParseSearchResponse` 时，必须保留 `timed_out`、`_shards.failed` 和完整的hits字段；对象形式total必须包含value及relation。正常空命中仍返回准确总数0和非nil空切片。此前接受部分结果或省略上述必要字段的响应现在返回错误，公开函数签名保持。
 
 协议依据见 [Elasticsearch 7 Search API](https://www.elastic.co/guide/en/elasticsearch/reference/7.17/search-search.html)。本套错误与OpenSearch保持独立。
+
+使用 `filter_path` 且目标实现Schema时，还必须保留 `hits.hits._id`，并继续保留 `hits.hits._source`；不能仅保留正文后再依赖Schema读取文档ID。
+
+成功搜索会替换为新切片，不复用旧元素，也不保留响应中缺失字段的旧值；需要的业务默认值应由业务解码或结果处理逻辑明确设置。
 
 空 create ID 使用 `commonTool.NewUUidV7()` 生成 36 字符 UUIDv7；生成失败保留错误链并直接返回，不发送写入请求。业务已指定 ID 时原样使用。自动生成的 create ID 不写回调用方对象，同一次 SDK 请求重试复用该 ID，再次调用 `InsertSchema` 会重新生成；需要稳定重发标识时业务提前设置 ID。生成值不是业务自增序号，同一毫秒内不保证递增。
 

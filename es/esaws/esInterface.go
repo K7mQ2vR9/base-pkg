@@ -5,7 +5,7 @@ type IndexTable interface {
 	IndexName() string
 }
 
-// Schema 提供 OpenSearch 文档 ID，FindOne 成功后将实际 ID 写入目标。
+// Schema 提供 OpenSearch 文档 ID，FindOne 和 Search 成功后将原生 _id 写入目标或结果元素。
 type Schema interface {
 	GetId() string
 	SetId(id string)
