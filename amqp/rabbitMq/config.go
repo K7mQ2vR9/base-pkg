@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/streadway/amqp"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 // Config 配置业务队列、重试、失败归档及 TG 通知，未填写的可选项采用默认值。
@@ -30,6 +30,7 @@ type Config struct {
 	// DialTimeout 覆盖连接、握手和拓扑初始化，零值默认 5s。
 	DialTimeout time.Duration `json:",optional"`
 	// Heartbeat 默认 10s，显式 0 采用 broker 的间隔，其他值须为 1～65535 整秒。
+	// 本字段优先于 URL 中的 heartbeat 参数，连接适配器会向驱动显式传递整秒值。
 	Heartbeat *time.Duration `json:",optional"`
 	// ReconnectInterval 重连失败或连接失效后的等待时间，零值默认 5s。
 	ReconnectInterval time.Duration `json:",optional"`

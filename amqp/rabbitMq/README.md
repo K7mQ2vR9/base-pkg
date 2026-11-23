@@ -2,6 +2,12 @@
 
 通过独立 `rabbitmq.Config` 配置。应用公共配置已提供可选的 `ConfigAppServer.RabbitMQ` 字段，资源由服务启动代码初始化并在退出时关闭。新项目使用新接口，无旧构造函数及方法签名兼容层。
 
+底层驱动为 `github.com/rabbitmq/amqp091-go v1.17.0`，选定版本的go.mod要求Go1.20，项目Go1.22声明保持。已删除本模块对 `github.com/streadway/amqp` 的直接依赖及源码引用，不保留旧驱动类型转换或兼容别名。维护背景及接口差异见 [驱动说明](https://github.com/rabbitmq/amqp091-go)、[v1.17.0发布记录](https://github.com/rabbitmq/amqp091-go/releases/tag/v1.17.0)。
+
+新驱动的 `Recovery` 明确设为nil，自动重连与拓扑恢复保持关闭；由本包重建连接、队列绑定、发布确认通知及消费者，避免两套恢复流程同时运行。标准发布/消费、重试归档、消息ID/Trace ID和单条ACK/NACK规则保持。`ConfirmTimeout` 仍通过现有上下文取消和底层连接关闭控制阻塞写入及确认等待，不因更换驱动而取消这些保护。
+
+普通业务继续使用本包 `Message`、`PublishJSON`、`Consume` 等接口，无需导入驱动。若业务直接构造原生 `Table`、`Decimal` 或通过 `errors.As` 判断驱动 `Error`，须改为新包类型，例如导入 `amqp "github.com/rabbitmq/amqp091-go"`；旧驱动的具名类型不再被消息头复制逻辑接受。这个导入别名仅是Go包名，不是旧类型兼容层。
+
 请求链路统一采用 Request ID = Trace ID，发布、消费、重试、失败归档和 TG 告警沿用同一个值；生成及校验规则见 [统一请求 ID 规则](../../headInfo/TRACE_ID.md)。`Message.ID` 继续独立标识具体消息。
 
 ## 消息流程
@@ -41,7 +47,7 @@ TG 默认关闭。启用时提供 `Telegram.Enabled: true`、`BotToken` 和 `Cha
 | `QueueDurable`、`ExchangeDurable`、`Persistent` | `true`；辅助队列始终持久化，终态转存消息强制持久化 |
 | `QueueAutoDelete`、`QueueExclusive` | `false` |
 | `DialTimeout` | `5s`，连接、握手及拓扑初始化的总时限 |
-| `Heartbeat` | `10s`；显式 `0` 采用 broker 间隔，其他值为 1～65535 整秒 |
+| `Heartbeat` | `10s`；显式 `0` 采用 broker 间隔，其他值为 1～65535 整秒；此字段优先于URL的heartbeat参数 |
 | `ReconnectInterval` | `5s`，连接失败或消费转存失败后的退避 |
 | `ConfirmTimeout` | `5s`，发布串行等待、写入及确认的总时限 |
 | `HandlerTimeout` | `30s`，每次业务回调的独立处理时限，`0` 使用默认值 |
@@ -54,6 +60,8 @@ TG 默认关闭。启用时提供 `Telegram.Enabled: true`、`BotToken` 和 `Cha
 | `Telegram.Timeout`、`Telegram.RetryInterval` | `5s`、`30s` |
 
 指针配置区分缺省值和显式零值或 `false`。其余时长字段填 `0` 时使用默认值，负值不允许。已有同名队列或交换机的属性须与配置一致，初始化不会删除或改建已有资源。
+
+心跳适配器将归一化后的Heartbeat按整秒写入连接URI的 `heartbeat` 参数，再交给新驱动。这样显式0不会被驱动按“未设置”恢复为10s，也不会被URL中的另一个心跳值覆盖；调用方原URL字符串不修改或输出到日志。若双方都选择关闭心跳，最终行为按AMQP协商结果处理。
 
 ## 失败归档与通知的投递确认
 

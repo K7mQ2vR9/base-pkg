@@ -12,7 +12,7 @@ import (
 
 	"github.com/K7mQ2vR9/base-pkg/commonTool"
 	"github.com/K7mQ2vR9/base-pkg/headInfo"
-	"github.com/streadway/amqp"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/zeromicro/go-zero/core/logc"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"

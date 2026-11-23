@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/streadway/amqp"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/zeromicro/go-zero/core/logc"
 )
 
@@ -57,7 +57,8 @@ func (s *session) close() {
 	s.once.Do(func() { close(s.done); _ = s.transport.Close() })
 }
 
-// RabbitMQ 管理连接、发布确认和订阅恢复，队列参数在初始化后只读。
+// RabbitMQ 管理 amqp091-go 连接、发布确认和订阅恢复，队列参数在初始化后只读。
+// 驱动自动恢复保持关闭，由本包在连接失效后重新声明拓扑、绑定并恢复消费者。
 type RabbitMQ struct {
 	config     settings
 	dial       dialFunc

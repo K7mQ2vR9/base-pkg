@@ -73,6 +73,7 @@
 | 46 | Elasticsearch 7/OpenSearch搜索结果完整性校验 | 已按确认修改，沿用用户不做测试和验证的要求 |
 | 47 | Elasticsearch 7/OpenSearch成功响应读取上限 | 已按确认修改，沿用用户不做测试和验证的要求 |
 | 48 | JWT迁移至golang-jwt/jwt/v5并保持平台校验规则 | 已按确认修改，沿用用户不做测试和验证的要求 |
+| 49 | RabbitMQ驱动迁移至rabbitmq/amqp091-go | 已按确认修改，沿用用户不做测试和验证的要求 |
 
 ## 开发记录
 
@@ -1501,3 +1502,15 @@ git diff --check
 - **调用与说明** 定位到其他子项目引用旧模块或自有JWT实现，不是当前base-pkg消费者，本轮不迁移其源码或依赖。当前公共包未发现需调整的业务Claims调用。补充公开Claims字段、Getter及关键校验的中文注释，README增加版本、Claims迁移、时间源及底层错误链说明，现有签发/解析范例调用方式保持。
 - **验证与限制** 仅读取和定位源码、调用、现有缓存及官方发布/迁移资料，并执行上述离线依赖维护命令；未执行构建、编译、测试、范例运行、格式或差异检查，也未验证Token跨版本互验或API/RPC联调，不声称已验证通过。底层错误类型及已移除StandardClaims的类型断言需由使用方迁移。
 - **测试与产物** 未新增测试文件、测试脚本、临时产物或本轮独立缓存，无需清理；复用原有模块缓存，不删除原有依赖或测试。API/RPC目录仅更新开发记录，其他业务项目源码保持。
+
+### 2026-11-23 / DEV-20261123-006 / 第49项RabbitMQ驱动维护迁移
+
+- **用户确认与范围** 按确认从streadway/amqp迁移至RabbitMQ团队维护的amqp091-go，保持本包发布、消费、重连、重试、确认和单条ACK规则。沿用不执行测试或验证的要求。用户已跳过的TG通知重试队列优化、Kafka及AES运维一致性检查均未实施。
+- **依赖维护** 固定github.com/rabbitmq/amqp091-go v1.17.0，选定版本go.mod要求Go1.20，项目Go1.22和toolchain声明保持。更新go.mod/go.sum，删除旧驱动直接依赖和对应校验和。当前其他业务项目未定位到旧驱动直接引用，本轮不迁移其模块；未运行go mod tidy或升级其他依赖。
+- **内部适配** 八份RabbitMQ源文件改为新驱动原生类型，统一覆盖配置URI解析、连接/Channel、Delivery、Publishing、Confirmation、Return、Error、Table及Decimal。内部brokerChannel接口继续使用现有Publish/Consume/通知方法，业务Message和公开发布/消费签名保持。不保留旧包类型兼容转换；直接使用旧Table/Decimal或原生Error断言的调用方须迁移。
+- **恢复与超时** amqp.Config.Recovery明确设为nil，驱动自动恢复关闭，本包继续重建完整会话、声明拓扑、恢复绑定/消费者并注册发布与关闭通知。发布串行锁、确认序号、mandatory、归档双份确认、ACK/NACK的multiple=false及原有上下文关闭底层连接策略保持，没有启用另一套恢复或重发机制。
+- **心跳适配** 新驱动将Config.Heartbeat=0当作缺省10s，适配器将归一化的Heartbeat按整秒写入独立连接URI，显式0得以按原配置约定参与broker协商，避免静默恢复默认值。Config.Heartbeat优先于原URL的heartbeat参数，其他URI参数保留，调用方原字符串不修改或回显。补充配置字段和适配逻辑中文注释。
+- **依赖获取命令** 在common-pkg目录执行 `GOWORK=off GOMODCACHE=/private/tmp/new-platform-amqp-driver.iAnHaWxQ/modules GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org go mod download -json github.com/rabbitmq/amqp091-go@v1.17.0`。首次默认沙箱因DNS解析失败未取得模块；同命令经获准的网络访问下载成功，取得模块和校验和。这是依赖获取，不是项目构建或测试，下载源码仅存放本轮临时目录。
+- **注释与说明** 更新连接/驱动边界、消息头原生类型及Heartbeat的中文注释，README和USAGE增加版本、恢复所有权、原生类型迁移及心跳优先级说明，既有普通业务范例调用方式保持。
+- **验证与限制** 仅为适配读取和定位项目源码、本轮下载的驱动源码及官方资料，并执行上述依赖获取命令；未执行构建、编译、测试、范例运行、格式、差异检查或broker联调，不声称已验证驱动迁移、确认事件及重连行为通过。
+- **清理完成** 已在清理前记录实际依赖命令、结果和限制，随后删除下载到任务目录的依赖源码、zip、模块元数据和sumdb缓存，任务目录已不存在。本轮无新增项目测试、测试脚本或遗留临时产物，原有模块缓存及项目测试未清理；API/RPC目录仅更新记录。

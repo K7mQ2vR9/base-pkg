@@ -4,12 +4,15 @@ import (
 	"context"
 	"io"
 	"net"
+	"net/url"
+	"strconv"
 	"time"
 
-	"github.com/streadway/amqp"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// brokerChannel 使用驱动的原生方法，供连接恢复与订阅统一管理。
+// brokerChannel 使用 amqp091-go 的原生方法，供本包统一管理发布确认、退回及订阅恢复。
+// 不启用驱动自动恢复，避免连接、确认序号及消费者被两套恢复机制同时管理。
 type brokerChannel interface {
 	QueueDeclare(string, bool, bool, bool, bool, amqp.Table) (amqp.Queue, error)
 	ExchangeDeclare(string, string, bool, bool, bool, bool, amqp.Table) error
@@ -48,12 +51,23 @@ func (c *deadlineConn) Write(data []byte) (int, error) {
 	return c.Conn.Write(data)
 }
 
+// amqpDialer 使用 amqp091-go 建立受启动上下文约束的连接，恢复和关闭均由本包会话管理。
+// Heartbeat 统一取已归一化的配置；通过 URI 显式传值，避免驱动将 0 再次替换为默认 10s。
 func amqpDialer(config settings) dialFunc {
 	return func(ctx context.Context) (brokerConnection, io.Closer, error) {
+		connectionURL, err := url.Parse(config.URL)
+		if err != nil {
+			return nil, nil, &operationError{"parse connection URL", err}
+		}
+		query := connectionURL.Query()
+		query.Set("heartbeat", strconv.FormatInt(int64(config.heartbeat/time.Second), 10))
+		connectionURL.RawQuery = query.Encode()
 		var raw net.Conn
 		var stop func() bool
-		conn, err := amqp.DialConfig(config.URL, amqp.Config{
+		conn, err := amqp.DialConfig(connectionURL.String(), amqp.Config{
 			Heartbeat: config.heartbeat,
+			// nil 明确关闭新驱动的自动重连与拓扑恢复，由本包重建完整会话并重新注册通知。
+			Recovery: nil,
 			Dial: func(network, addr string) (net.Conn, error) {
 				connection, err := (&net.Dialer{Timeout: config.DialTimeout}).DialContext(ctx, network, addr)
 				if err != nil {

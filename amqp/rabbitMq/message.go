@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/K7mQ2vR9/base-pkg/commonTool"
-	"github.com/streadway/amqp"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 // Message 为发布和消费共用的业务消息，不暴露 ACK/NACK 或驱动连接。
@@ -208,6 +208,7 @@ func cloneHeaders(headers map[string]any) (map[string]any, error) {
 }
 
 // cloneHeaderValue 隔离嵌套表、数组及二进制值，拒绝循环引用和驱动不支持的类型。
+// 原生 Table/Decimal 仅采用 amqp091-go 类型，不兼容旧驱动的具名类型。
 func cloneHeaderValue(value any, path map[headerIdentity]bool) (any, error) {
 	if table, ok := value.(amqp.Table); ok {
 		value = map[string]any(table)

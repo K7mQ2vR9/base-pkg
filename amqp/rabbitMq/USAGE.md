@@ -2,6 +2,8 @@
 
 适用于 `github.com/K7mQ2vR9/base-pkg/amqp/rabbitMq`。配置默认值、重试流程和超时边界见 [配置与运行说明](README.md)。业务统一使用 `Message`，无需导入 AMQP 驱动或操作 ACK/NACK。
 
+底层已切换到 `rabbitmq/amqp091-go v1.17.0`，下面业务范例的接口保持。普通Headers继续使用 `map[string]any`；确需原生嵌套Table/Decimal或驱动错误类型时使用 `amqp "github.com/rabbitmq/amqp091-go"`，不再传入旧streadway类型。驱动自动恢复关闭，本包继续统一管理重连、拓扑和订阅恢复；本轮不涉及TG通知重试流程或Kafka改造。
+
 ## 消息 ID：支持业务自增 ID
 
 `Message.ID` 是字符串。可以把数据库业务自增 ID 用 `strconv.FormatInt(businessID, 10)` 转成字符串，通过 `WithMessageID` 或 `Message.ID` 指定。指定后公共包原样使用，不再生成 UUID。

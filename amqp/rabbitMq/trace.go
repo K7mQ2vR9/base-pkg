@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/K7mQ2vR9/base-pkg/headInfo"
-	"github.com/streadway/amqp"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"go.opentelemetry.io/otel/propagation"
 )
 

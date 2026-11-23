@@ -14,7 +14,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/K7mQ2vR9/base-pkg/headInfo"
-	"github.com/streadway/amqp"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/zeromicro/go-zero/core/logc"
 )
 
