@@ -32,6 +32,8 @@
 package service
 
 import (
+    "errors"
+
     "github.com/K7mQ2vR9/base-pkg/app"
     "github.com/K7mQ2vR9/base-pkg/appMiddleware"
     "github.com/zeromicro/go-zero/rest"
@@ -41,21 +43,33 @@ import (
 // 两个回调均由业务提供，不能把无效 Token 返回为 0,nil,nil。
 func ConfigureAPI(server *rest.Server,
     verify appMiddleware.CheckRequestTokenFuncWithUserInfo,
-    serviceAvailable appMiddleware.CheckServiceStatusFunc) {
+    serviceAvailable appMiddleware.CheckServiceStatusFunc) error {
+    if serviceAvailable == nil {
+        return errors.New("service status checker is required")
+    }
     white := map[string]int{
         "/public": 1,
         "/open/*": 1,
     }
-    app.NewServerMiddleware(server,
+    // 先创建独立状态组件，再装配API链路；确认的非空回调满足此组件的构造要求。
+    serviceStatus := appMiddleware.NewCheckServiceStatusMiddleware(white,
+        appMiddleware.WithCheckServiceStatusCheckOption(serviceAvailable),
+    )
+    if err := app.NewServerMiddleware(server,
         app.WithWhiteHeaderPathSMOption(white),
         app.WithCheckTokenHandleWithUserInfoSMOption(verify),
-    ).ApiUseMiddleware()
+    ).ApiUseMiddleware(); err != nil {
+        return err
+    }
     // 状态检查接在认证之后；匿名请求的 UID 为 0，Token 可能为空。
-    server.Use(appMiddleware.NewCheckServiceStatusMiddleware(white,
-        appMiddleware.WithCheckServiceStatusCheckOption(serviceAvailable),
-    ).Handle)
+    server.Use(serviceStatus.Handle)
+    return nil
 }
 ```
+
+启动代码必须检查 `ConfigureAPI` / `ApiUseMiddleware` 返回的错误，失败时记录原因、清理已创建的资源并停止启动。`ApiUseMiddleware` 在全部配置校验和组件创建成功后才追加中间件，缺少认证回调等配置错误不再直接panic，不会留下本次部分装配。
+
+独立使用 `NewUserAgentMiddleware` 或 `NewUserAuthMiddlewareWithErr` 时，构造函数均返回 `(组件指针, error)`；缺少回调或传入nil选项返回nil组件和错误，不保留旧单返回值入口。先检查错误，再通过 `server.Use(auth.Handle)` 接入；认证回调签名、运行时错误响应和白名单规则保持。独立服务状态组件仍使用原构造接口，示例在调用之前明确检查其必需回调。
 
 server 使用 `app.NewServerWithCORS` 创建，保留 Trace 和单值业务头校验。服务状态中间件仍需显式接入，`ApiUseMiddleware` 不会自动配置业务状态回调。`CheckServiceStatusRequest` 与构造函数继续接收原白名单参数，但不会据此跳过状态检查，缺少回调或返回 false 均拒绝。
 

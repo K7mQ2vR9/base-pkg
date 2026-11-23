@@ -43,12 +43,17 @@ func BuildAPI(restConf rest.RestConf, config app.ConfigAppServer,
     if err != nil {
         return nil, err
     }
-    app.NewServerMiddleware(server,
+    if err := app.NewServerMiddleware(server,
         app.WithCheckTokenHandleWithErrSMOption(verify),
-    ).ApiUseMiddleware()
+    ).ApiUseMiddleware(); err != nil {
+        server.Stop()
+        return nil, err
+    }
     return server, nil
 }
 ```
+
+`ApiUseMiddleware()` 返回 `error`，启动代码必须处理；失败时本次中间件不会追加，进程级 AES 配置也不会因无效配置而改变。调用方记录错误、清理自己创建的资源并停止启动，不继续注册路由或监听。该方法只在启动阶段调用一次。
 
 服务策略在最外层绑定，正常、Trace/请求头错误、正文限制、AES/认证/并发错误，以及404/405都使用同一来源规则。Trace和头校验仍先于预检放行；声明长度检查后，有效 OPTIONS 在路由入口返回204（含未注册路径），不进入正文、认证或业务。普通请求的业务处理顺序不变。
 

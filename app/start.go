@@ -40,7 +40,7 @@ func WithAESGCM(config aesGCM.Config) (SMOption, error) {
 	}, nil
 }
 
-// WithMaxConcurrency sets the shared per-server request limit. Zero disables it.
+// WithMaxConcurrency 设置当前 Server 的共享并发请求数上限，单位为请求数，0 关闭，负数返回配置错误。
 func WithMaxConcurrency(max int) (SMOption, error) {
 	if max < 0 {
 		return nil, fmt.Errorf("MaxConcurrency must be non-negative, got %d", max)
@@ -61,6 +61,7 @@ func WithRequestBody(config appMiddleware.RequestBodyConfig) (SMOption, error) {
 	}, nil
 }
 
+// WithCheckTokenHandleSMOption 配置整数结果的认证回调；nil 在 ApiUseMiddleware 中返回初始化错误。
 func WithCheckTokenHandleSMOption(fun appMiddleware.CheckRequestTokenFunc) SMOption {
 	return func(s *ServerMiddleware) {
 		s.checkTokenHandle = fun
@@ -97,6 +98,8 @@ func WithTrustedProxyCIDRs(cidrs []string) (SMOption, error) {
 }
 
 type ServerMiddleware struct {
+	// initErr 保存装配选项错误，统一由 ApiUseMiddleware 返回；选项执行前不会追加中间件。
+	initErr            error
 	whiteHeader        map[string]int
 	checkTokenHandle   appMiddleware.CheckRequestTokenFunc
 	authOption         appMiddleware.AuthMiddlewareOption
@@ -112,13 +115,19 @@ type ServerMiddleware struct {
 	aesConfig aesGCM.Config
 }
 
-// NewServerMiddleware 装配应用中间件；Server 用 NewServerWithCORS 创建，以便在原生 Span 前初始化统一 ID。
+// NewServerMiddleware 记录应用中间件选项，不立即向 Server 追加中间件。
+// Server 用 NewServerWithCORS 创建；启动时须调用 ApiUseMiddleware 并处理返回的错误。
+// nil 选项保存为初始化错误，不执行后续选项；不会因 nil 选项直接 panic。
 func NewServerMiddleware(s *rest.Server, opt ...SMOption) *ServerMiddleware {
 	res := &ServerMiddleware{
 		Server: s,
 	}
 
-	for _, item := range opt {
+	for index, item := range opt {
+		if item == nil {
+			res.initErr = fmt.Errorf("server middleware option at index %d is nil", index)
+			return res
+		}
 		item(res)
 	}
 
@@ -128,23 +137,45 @@ func NewServerMiddleware(s *rest.Server, opt ...SMOption) *ServerMiddleware {
 // ApiUseMiddleware 依次装配 CORS、可选并发控制、正文限制、解密、请求头和认证。
 // 正文上限未配置时使用 1 MiB；Trace、单值业务头校验及原生长度预检查由 NewServerWithCORS 负责。
 // 标准入口的 CORS 策略覆盖正常及早期错误；此处默认 CORS 组件沿用已绑定的实例配置。
-func (s *ServerMiddleware) ApiUseMiddleware() {
-	authMiddleware := s.authMiddleware()
-	s.Server.Use(appMiddleware.NewCorsMiddleware().Handle)
-	if s.maxConcurrency > 0 {
-		s.Server.Use(appMiddleware.NewConcurrencyLimiter(s.maxConcurrency).Handle)
+// 仅在启动阶段调用一次；先完成全部配置校验和组件创建，再应用进程级 AES 配置并统一追加。
+// nil Server/选项、缺少认证回调及正文/AES 配置错误均返回 error，失败不追加任何本次中间件。
+func (s *ServerMiddleware) ApiUseMiddleware() error {
+	if s == nil || s.Server == nil {
+		return fmt.Errorf("API server is required")
+	}
+	if s.initErr != nil {
+		return s.initErr
+	}
+	if s.maxConcurrency < 0 {
+		return fmt.Errorf("MaxConcurrency must be non-negative, got %d", s.maxConcurrency)
+	}
+	authMiddleware, err := s.authMiddleware()
+	if err != nil {
+		return fmt.Errorf("invalid authentication configuration: %w", err)
 	}
 	body, err := appMiddleware.NewRequestBodyMiddleware(s.requestBodyConfig)
 	if err != nil {
-		panic(fmt.Errorf("invalid request body configuration: %w", err))
+		return fmt.Errorf("invalid request body configuration: %w", err)
 	}
-	s.Server.Use(body.Handle)
-	s.useApiRequestDecrypt()
-	s.useApiHeaderMiddleware()
-	s.Server.Use(authMiddleware)
+	headerMiddleware := s.apiHeaderMiddleware()
+	middlewares := []rest.Middleware{appMiddleware.NewCorsMiddleware().Handle}
+	if s.maxConcurrency > 0 {
+		middlewares = append(middlewares, appMiddleware.NewConcurrencyLimiter(s.maxConcurrency).Handle)
+	}
+	// 解密构造会发布进程级 AES 配置，因此放在其他可失败的配置与组件创建之后。
+	decrypt, err := appMiddleware.NewApiRequestDecryptMiddleware(s.aesConfig, s.requestBodyConfig)
+	if err != nil {
+		return fmt.Errorf("invalid AES-GCM configuration: %w", err)
+	}
+	middlewares = append(middlewares, body.Handle, decrypt.Handle, headerMiddleware, authMiddleware)
+	for _, middleware := range middlewares {
+		s.Server.Use(middleware)
+	}
+	return nil
 }
 
-func (s *ServerMiddleware) useApiHeaderMiddleware() {
+// apiHeaderMiddleware 仅创建请求头组件，实际追加由 ApiUseMiddleware 在全部初始化成功后执行。
+func (s *ServerMiddleware) apiHeaderMiddleware() rest.Middleware {
 	var apiHeaderOption = []appMiddleware.ApiHeadOption{
 		appMiddleware.CloseVerifyOption(s.whiteHeader),
 	}
@@ -154,29 +185,26 @@ func (s *ServerMiddleware) useApiHeaderMiddleware() {
 	if s.isDebug {
 		apiHeaderOption = append(apiHeaderOption, appMiddleware.WithDebugOption())
 	}
-	s.Server.Use(appMiddleware.NewApiHeaderMiddleware(
+	return appMiddleware.NewApiHeaderMiddleware(
 		apiHeaderOption...,
-	).Handle)
-}
-
-func (s *ServerMiddleware) authMiddleware() rest.Middleware {
-	if s.authOption != nil {
-		return appMiddleware.NewUserAuthMiddlewareWithErr(s.whiteHeader, s.authOption).Handle
-	}
-	if s.checkTokenHandle == nil {
-		panic("token checker is required: use an app token checker option")
-	}
-
-	return appMiddleware.NewUserAgentMiddleware(
-		s.whiteHeader,
-		appMiddleware.WithCheckOption(s.checkTokenHandle),
 	).Handle
 }
 
-func (s *ServerMiddleware) useApiRequestDecrypt() {
-	middleware, err := appMiddleware.NewApiRequestDecryptMiddleware(s.aesConfig, s.requestBodyConfig)
-	if err != nil {
-		panic(fmt.Errorf("invalid AES-GCM configuration: %w", err))
+// authMiddleware 创建已校验认证回调的组件，缺少回调或选项无效时返回错误，不追加中间件。
+func (s *ServerMiddleware) authMiddleware() (rest.Middleware, error) {
+	if s.authOption != nil {
+		middleware, err := appMiddleware.NewUserAuthMiddlewareWithErr(s.whiteHeader, s.authOption)
+		if err != nil {
+			return nil, err
+		}
+		return middleware.Handle, nil
 	}
-	s.Server.Use(middleware.Handle)
+	middleware, err := appMiddleware.NewUserAgentMiddleware(
+		s.whiteHeader,
+		appMiddleware.WithCheckOption(s.checkTokenHandle),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return middleware.Handle, nil
 }
